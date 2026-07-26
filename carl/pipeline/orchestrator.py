@@ -35,6 +35,7 @@ from carl.pipeline.router import AudioRouter
 from carl.stages import Stages
 from carl.stages.reasoner import Message, ReasonerTurn, ToolCall, ToolResult
 from carl.stages.stt import Transcript
+from carl.stages.vad import SpeechEnd
 from carl.storage.db import connect
 from carl.tools import ToolContext, ToolRegistry
 from carl.tools.base import ToolResult as ProviderToolResult
@@ -89,6 +90,11 @@ class Pipeline:
         self._history: list[Message] = []
         self._tts_cancel: asyncio.Event = asyncio.Event()
 
+        # Set in run() based on whether the wake stage is audio-driven.
+        # Determines whether _on_wake_detected pumps real audio through VAD/STT
+        # or uses the mock's synchronous canned-transcript path.
+        self._audio_mode: bool = False
+
     # ─── Lifecycle ───────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -98,8 +104,8 @@ class Pipeline:
         # Only start the audio router (which opens the mic) if we have an
         # audio-driven stage that needs it. Fully-mock config skips this so
         # dev/test runs don't require mic permission.
-        needs_audio = self.stages.wake_word.wants_audio()
-        if needs_audio:
+        self._audio_mode = self.stages.wake_word.wants_audio()
+        if self._audio_mode:
             self.router.register("wake_word", self.stages.wake_word.feed)
             self.router.activate("wake_word")
             self.router.start()
@@ -179,11 +185,16 @@ class Pipeline:
         )
 
         # Open STT session. Mock returns canned transcript on close();
-        # real STT (Milestone 2) streams audio via the router.
+        # real STT streams audio via the router until VAD fires speech_end.
         stt_session = await self.stages.stt.open_stream(self._on_transcript)
-        # Simulate one frame — mock uses this to emit a partial event.
-        await stt_session.send(b"")
-        transcript_text = await stt_session.close()
+
+        if self._audio_mode:
+            transcript_text = await self._record_utterance_real(stt_session)
+        else:
+            # Mock path: send a dummy frame to trigger the fake partial,
+            # then close to get the canned final transcript.
+            await stt_session.send(b"")
+            transcript_text = await stt_session.close()
 
         self._transition(State.THINKING, trigger=SPEECH_END)
         assert self._current_turn is not None
@@ -288,6 +299,78 @@ class Pipeline:
                 conversation_id=self._conversation_id,
                 turn_id=self._current_turn.id if self._current_turn else None,
             )
+
+    async def _record_utterance_real(self, stt_session) -> str:
+        """Real-audio RECORDING path: pump router audio into STT and VAD in
+        parallel until VAD fires speech_end (or utterance timeout). Returns
+        the final transcript."""
+        # Reset VAD state between utterances — Silero is stateful.
+        reset = getattr(self.stages.vad, "reset", None)
+        if reset is not None:
+            reset()
+
+        speech_end = asyncio.Event()
+
+        # Frame queues so audio flows in ORDER through STT and VAD. The
+        # router's consumer callback is sync (runs on the dispatch task);
+        # putting on a Queue and draining via a dedicated task preserves
+        # ordering that a bare `create_task` per frame would risk.
+        stt_frames: asyncio.Queue[bytes | None] = asyncio.Queue()
+        vad_frames: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        async def _stt_drain() -> None:
+            while True:
+                frame = await stt_frames.get()
+                if frame is None:
+                    return
+                await stt_session.send(frame)
+
+        async def _vad_drain() -> None:
+            while True:
+                frame = await vad_frames.get()
+                if frame is None:
+                    return
+                evt = await self.stages.vad.process(frame)
+                if isinstance(evt, SpeechEnd):
+                    speech_end.set()
+
+        stt_task = asyncio.create_task(_stt_drain(), name="stt_drain")
+        vad_task = asyncio.create_task(_vad_drain(), name="vad_drain")
+
+        def stt_consumer(pcm: bytes) -> None:
+            stt_frames.put_nowait(pcm)
+
+        def vad_consumer(pcm: bytes) -> None:
+            vad_frames.put_nowait(pcm)
+
+        self.router.register("stt", stt_consumer)
+        self.router.register("vad", vad_consumer)
+
+        # Prepend the router's ring buffer to STT so the wake phrase +
+        # start-of-utterance are captured (real STT streams have startup
+        # latency; the ring buffer holds audio from before the stream existed).
+        await self.router.replay_ring(stt_consumer)
+        # VAD sees only live audio (replaying the wake phrase into VAD would
+        # immediately fire speech_end at t=0).
+        self.router.activate("stt", "vad")
+
+        try:
+            await asyncio.wait_for(
+                speech_end.wait(),
+                timeout=self.config.conversation.utterance_max_seconds,
+            )
+        except TimeoutError:
+            log.warning("utterance_timeout",
+                        seconds=self.config.conversation.utterance_max_seconds)
+
+        # Stop routing audio and drain the queues cleanly.
+        self.router.deactivate("stt", "vad")
+        stt_frames.put_nowait(None)
+        vad_frames.put_nowait(None)
+        await stt_task
+        await vad_task
+
+        return await stt_session.close()
 
     def _make_on_tool_call(self):
         """Build the reasoner's on_tool_call callback bound to this turn's context.

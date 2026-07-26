@@ -5,10 +5,10 @@ version: 1
 # is kept in this file even when unused so switching is a one-line change.
 providers:
   wake_word: openwakeword     # M2: real. Say "hey jarvis" into the mic.
-  vad: mock                    # M2 in-progress
-  stt: mock                    # M2 in-progress
-  reasoner: mock               # M2 in-progress
-  tts: mock                    # M2 in-progress
+  vad: silero                  # M2: real
+  stt: deepgram                # M2: real (Nova-3 streaming)
+  reasoner: claude_sonnet      # M2: real (Sonnet 4.6 streaming)
+  tts: openai                  # M2: real (gpt-4o-mini-tts, nova voice)
   search: mock                 # M3
 
 wake_word:

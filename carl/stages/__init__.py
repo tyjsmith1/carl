@@ -40,6 +40,26 @@ def _openwakeword_factory(config: Any) -> WakeWord:
     return OpenWakeWord(config)
 
 
+def _silero_vad_factory(config: Any) -> VAD:
+    from carl.stages.vad.silero import build_utterance_end_vad
+    return build_utterance_end_vad(config)
+
+
+def _deepgram_stt_factory(config: Any) -> STT:
+    from carl.stages.stt.deepgram import DeepgramSTT
+    return DeepgramSTT(config)
+
+
+def _claude_reasoner_factory(config: Any) -> Reasoner:
+    from carl.stages.reasoner.claude import ClaudeReasoner
+    return ClaudeReasoner(config)
+
+
+def _openai_tts_factory(config: Any) -> TTS:
+    from carl.stages.tts.openai import OpenAITTS
+    return OpenAITTS(config)
+
+
 _WAKE_WORD_IMPLS: dict[str, Callable[[Any], WakeWord]] = {
     "mock": StdinTriggeredWakeWord,
     "openwakeword": _openwakeword_factory,
@@ -47,27 +67,27 @@ _WAKE_WORD_IMPLS: dict[str, Callable[[Any], WakeWord]] = {
 
 _VAD_IMPLS: dict[str, Callable[[Any], VAD]] = {
     "mock": NoopVAD,
-    "silero": _not_yet("vad", "silero"),                     # Milestone 2
+    "silero": _silero_vad_factory,
     "webrtc": _not_yet("vad", "webrtc"),
 }
 
 _STT_IMPLS: dict[str, Callable[[Any], STT]] = {
     "mock": CannedTranscriptSTT,
-    "deepgram": _not_yet("stt", "deepgram"),                 # Milestone 2
+    "deepgram": _deepgram_stt_factory,
     "whisper_api": _not_yet("stt", "whisper_api"),
     "whisper_local": _not_yet("stt", "whisper_local"),
 }
 
 _REASONER_IMPLS: dict[str, Callable[[Any], Reasoner]] = {
     "mock": EchoReasoner,
-    "claude_sonnet": _not_yet("reasoner", "claude_sonnet"),  # Milestone 2
-    "claude_opus": _not_yet("reasoner", "claude_opus"),
-    "claude_haiku": _not_yet("reasoner", "claude_haiku"),
+    "claude_sonnet": _claude_reasoner_factory,
+    "claude_opus": _claude_reasoner_factory,
+    "claude_haiku": _claude_reasoner_factory,
 }
 
 _TTS_IMPLS: dict[str, Callable[[Any], TTS]] = {
     "mock": PrintTTS,
-    "openai": _not_yet("tts", "openai"),                     # Milestone 2
+    "openai": _openai_tts_factory,
     "elevenlabs": _not_yet("tts", "elevenlabs"),
     "piper": _not_yet("tts", "piper"),
 }
