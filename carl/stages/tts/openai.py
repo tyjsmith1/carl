@@ -73,6 +73,11 @@ class OpenAITTS:
             "input": text,
             "response_format": self._config.response_format,   # "pcm" per config
         }
+        # Only send `speed` if the user actually customized it — some newer
+        # tts models are picky about parameters they don't understand, and
+        # 1.0 is the API default anyway so omitting it is a no-op.
+        if self._config.speed != 1.0:
+            params["speed"] = self._config.speed
         if self._instructions and "gpt-4o" in self._config.model:
             params["instructions"] = self._instructions
 

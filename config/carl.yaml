@@ -4,12 +4,12 @@ version: 1
 # as their implementations land (Milestone 2+). Config for the real providers
 # is kept in this file even when unused so switching is a one-line change.
 providers:
-  wake_word: openwakeword     # M2: real. Say "hey jarvis" into the mic.
-  vad: silero                  # M2: real
-  stt: deepgram                # M2: real (Nova-3 streaming)
-  reasoner: claude_sonnet      # M2: real (Sonnet 4.6 streaming)
-  tts: openai                  # M2: real (gpt-4o-mini-tts, nova voice)
-  search: tavily               # M3: real. Requires TAVILY_API_KEY.
+  wake_word: openwakeword # M2: real. Say "hey jarvis" into the mic.
+  vad: silero # M2: real
+  stt: deepgram # M2: real (Nova-3 streaming)
+  reasoner: claude_sonnet # M2: real (Sonnet 4.6 streaming)
+  tts: openai # M2: real (gpt-4o-mini-tts, nova voice)
+  search: tavily # M3: real. Requires TAVILY_API_KEY.
 
 wake_word:
   openwakeword:
@@ -49,9 +49,11 @@ reasoner:
 tts:
   openai:
     model: gpt-4o-mini-tts
-    voice: nova
+    voice: ash
     response_format: pcm
     sample_rate: 24000
+    # 1.0 = natural; 1.15–1.25 = brisk; >1.5 starts sounding chipmunky.
+    speed: 1.15
 
 search:
   tavily:

@@ -102,6 +102,9 @@ class OpenAITTSConfig(BaseModel):
     voice: str = "nova"
     response_format: Literal["pcm", "mp3", "opus", "aac", "flac", "wav"] = "pcm"
     sample_rate: int = 24000
+    # OpenAI clamps to 0.25–4.0. 1.0 = natural pace; 1.15–1.25 feels "brisk"
+    # without pitch-shifting artifacts; above ~1.5 starts sounding chipmunky.
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
     instructions_path: str | None = None
 
 
