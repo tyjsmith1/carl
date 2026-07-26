@@ -34,9 +34,15 @@ def _not_yet(stage: str, name: str) -> Callable[[Any], Any]:
     return _factory
 
 
+def _openwakeword_factory(config: Any) -> WakeWord:
+    # Lazy import — heavy deps (tflite/onnx, model download).
+    from carl.stages.wake_word.openwakeword import OpenWakeWord
+    return OpenWakeWord(config)
+
+
 _WAKE_WORD_IMPLS: dict[str, Callable[[Any], WakeWord]] = {
     "mock": StdinTriggeredWakeWord,
-    "openwakeword": _not_yet("wake_word", "openwakeword"),   # Milestone 2 — swapped in for Porcupine
+    "openwakeword": _openwakeword_factory,
 }
 
 _VAD_IMPLS: dict[str, Callable[[Any], VAD]] = {

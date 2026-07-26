@@ -65,7 +65,7 @@ def test_openwakeword_config_defaults() -> None:
     assert cfg.model_name == "hey_jarvis"
     assert cfg.model_path is None
     assert 0.0 <= cfg.threshold <= 1.0
-    assert cfg.inference_framework == "tflite"
+    assert cfg.inference_framework == "onnx"
 
 
 def test_deepgram_config_defaults() -> None:

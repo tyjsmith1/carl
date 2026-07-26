@@ -93,8 +93,16 @@ class Pipeline:
 
     async def run(self) -> None:
         self.event_log.start()
-        self.router.start()
         self._log_session_start()
+
+        # Only start the audio router (which opens the mic) if we have an
+        # audio-driven stage that needs it. Fully-mock config skips this so
+        # dev/test runs don't require mic permission.
+        needs_audio = self.stages.wake_word.wants_audio()
+        if needs_audio:
+            self.router.register("wake_word", self.stages.wake_word.feed)
+            self.router.activate("wake_word")
+            self.router.start()
 
         # Start wake-word listener; it will put wake_detected events on the queue.
         await self.stages.wake_word.start(self._on_wake_from_stage)

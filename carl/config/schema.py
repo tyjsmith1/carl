@@ -39,7 +39,10 @@ class OpenWakeWordConfig(BaseModel):
     model_name: str = "hey_jarvis"
     model_path: str | None = None            # overrides model_name if set
     threshold: float = 0.5                    # 0.0-1.0; higher = fewer false accepts
-    inference_framework: Literal["tflite", "onnx"] = "tflite"
+    # onnx is the default because tflite-runtime is a separate install
+    # (`pip install tflite-runtime`) that isn't always available on macOS ARM.
+    # onnxruntime is a hard dep of openwakeword, so it always works.
+    inference_framework: Literal["tflite", "onnx"] = "onnx"
 
 
 class WakeWordConfig(BaseModel):

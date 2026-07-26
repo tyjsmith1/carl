@@ -4,12 +4,12 @@ version: 1
 # as their implementations land (Milestone 2+). Config for the real providers
 # is kept in this file even when unused so switching is a one-line change.
 providers:
-  wake_word: mock
-  vad: mock
-  stt: mock
-  reasoner: mock
-  tts: mock
-  search: mock
+  wake_word: openwakeword     # M2: real. Say "hey jarvis" into the mic.
+  vad: mock                    # M2 in-progress
+  stt: mock                    # M2 in-progress
+  reasoner: mock               # M2 in-progress
+  tts: mock                    # M2 in-progress
+  search: mock                 # M3
 
 wake_word:
   openwakeword:
@@ -18,7 +18,7 @@ wake_word:
     # via OpenWakeWord's Colab notebook — see docs/BACKLOG.md.
     model_name: hey_jarvis
     threshold: 0.5
-    inference_framework: tflite
+    inference_framework: onnx
 
 vad:
   silero:
