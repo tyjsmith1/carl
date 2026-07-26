@@ -194,12 +194,23 @@ class Pipeline:
             await self._start_conversation()
 
         first_turn = True
+        followup_count = 0
+        max_followups = self.config.conversation.max_followup_turns
         while True:
+            if self._shutdown.is_set():
+                break
             if not await self._run_one_turn(event if first_turn else None,
                                             first_turn=first_turn):
                 # Early exit (empty transcript, shutdown, error): break the loop
                 # without waiting for follow-up — user won't have said anything
-                # meaningful this iteration.
+                # meaningful this iteration. _run_one_turn already transitioned
+                # to IDLE if it bailed.
+                break
+
+            if followup_count >= max_followups:
+                # Cap reached — force a fresh wake to keep going. Prevents
+                # runaway loops from ambient audio (TV, own tail-echo).
+                log.info("followup_cap_reached", cap=max_followups)
                 break
 
             # Follow-up window: after TTS finishes, keep the mic open and
@@ -210,9 +221,14 @@ class Pipeline:
             if not detected:
                 break
             first_turn = False
-            log.info("followup_turn_starting")
+            followup_count += 1
+            log.info("followup_turn_starting", followup_count=followup_count)
 
-        self._transition(State.IDLE, trigger=FOLLOWUP_EXPIRED)
+        # Only transition if we're not already IDLE — the empty-transcript
+        # path inside _run_one_turn transitions to IDLE itself, so we'd
+        # emit a redundant IDLE→IDLE otherwise.
+        if self.state != State.IDLE:
+            self._transition(State.IDLE, trigger=FOLLOWUP_EXPIRED)
 
     async def _run_one_turn(
         self,
@@ -469,20 +485,25 @@ class Pipeline:
     async def _wait_for_followup_speech(self) -> bool:
         """During the follow-up window, activate VAD on the mic and wait for
         SpeechStart. Returns True if the user began speaking within
-        follow_up_ms (loop into a new turn), False on timeout (end conversation).
+        follow_up_ms (loop into a new turn), False on timeout OR shutdown
+        (end conversation).
 
         Uses a small guard delay first so that the trailing echo of Carl's
         own TTS (still bleeding out of the speakers on desktop setups without
         AEC) doesn't false-trigger VAD as if it were the user. See BACKLOG
         for proper acoustic echo cancellation."""
-        # Guard: let TTS tail-echo dissipate before we start listening. On a
-        # laptop with built-in mic+speakers, the last ~200-400ms of speech
-        # audio is still audible when this function starts.
-        await asyncio.sleep(self.config.conversation.followup_guard_ms / 1000)
+        # Guard: let TTS tail-echo dissipate before we start listening. Race
+        # against shutdown so Ctrl-C during the guard bails immediately.
+        guard_seconds = self.config.conversation.followup_guard_ms / 1000
+        if guard_seconds > 0:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._shutdown.wait(), timeout=guard_seconds)
+            if self._shutdown.is_set():
+                return False
 
-        # Also drain any audio that piled up in the router's ring buffer
-        # during the guard delay — otherwise the very first VAD frame is
-        # the tail of Carl's own speech.
+        # Drain any audio that piled up in the router's ring buffer during
+        # the guard delay — otherwise the very first VAD frame is the tail
+        # of Carl's own speech.
         with contextlib.suppress(Exception):
             await self.router.drain_ring()
 
@@ -516,23 +537,27 @@ class Pipeline:
         self.router.register("vad_followup", vad_consumer)
         self.router.activate("vad_followup")
 
+        # Race the follow-up window: speech_start (success) vs shutdown vs
+        # follow_up_ms timeout. asyncio.wait returns as soon as any wins.
+        speech_task = asyncio.create_task(speech_start.wait())
+        shutdown_task = asyncio.create_task(self._shutdown.wait())
         try:
-            try:
-                await asyncio.wait_for(
-                    speech_start.wait(),
-                    timeout=self.config.conversation.follow_up_ms / 1000,
-                )
-                return True
-            except TimeoutError:
-                return False
+            done, _pending = await asyncio.wait(
+                [speech_task, shutdown_task],
+                timeout=self.config.conversation.follow_up_ms / 1000,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # Detected iff speech won AND shutdown didn't also fire.
+            return speech_task in done and not self._shutdown.is_set()
         finally:
             self.router.deactivate("vad_followup")
             with contextlib.suppress(asyncio.QueueFull):
                 vad_frames.put_nowait(None)
-            if not vad_task.done():
-                vad_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await vad_task
+            for t in (vad_task, speech_task, shutdown_task):
+                if not t.done():
+                    t.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
 
     def _make_on_tool_call(self):
         """Build the reasoner's on_tool_call callback bound to this turn's context.

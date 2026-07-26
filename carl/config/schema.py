@@ -178,7 +178,12 @@ class ConversationConfig(BaseModel):
     # Prevents Carl's own TTS tail-echo (still bleeding out of desktop
     # speakers on setups without acoustic echo cancellation) from
     # false-triggering VAD as if it were the user speaking.
-    followup_guard_ms: int = 400
+    followup_guard_ms: int = 600
+    # Cap on consecutive follow-up turns per wake-word cycle. Prevents a
+    # runaway feedback loop when the mic picks up Carl's own speech,
+    # background TV, or other ambient chatter and keeps triggering new turns.
+    # After the cap, requires a fresh "hey Jarvis" wake to continue.
+    max_followup_turns: int = 3
     no_speech_timeout_ms: int = 5000
 
 

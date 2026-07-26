@@ -93,7 +93,8 @@ conversation:
   tts_timeout_seconds: 10
   history_turns: 10
   follow_up_ms: 7000
-  followup_guard_ms: 400
+  followup_guard_ms: 600
+  max_followup_turns: 3
   no_speech_timeout_ms: 5000
 
 consolidation:
