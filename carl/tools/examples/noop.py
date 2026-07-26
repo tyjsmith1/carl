@@ -12,6 +12,7 @@ from carl.tools import ToolResult, tool
     description="Does nothing. Returns 'ok'. Used only to smoke-test the tool registry wiring; do not use this tool in a real conversation.",
     input_schema={"type": "object", "properties": {}},
     safety_tier="readonly",
+    internal=True,   # dev-only; not advertised to the LLM
 )
 class NoopTool:
     def __init__(self, config: Any = None):

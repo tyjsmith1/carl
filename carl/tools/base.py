@@ -15,6 +15,14 @@ class ToolDefinition:
     input_schema: dict[str, Any]
     safety_tier: SafetyTier = "readonly"
     provider_name: str = "native"
+    # True for smoke-test / dev-only tools that shouldn't be exposed to the
+    # LLM (e.g. `noop`). Registry keeps them so `carl tools list` can show
+    # them; orchestrator filters them out when building the tools_for_llm.
+    internal: bool = False
+    # Which `providers.*` config knob gates this tool. When
+    # `config.providers.<provider_group>` is "mock", the tool is skipped at
+    # registration. None = always registered (memory tools, universal utilities).
+    provider_group: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

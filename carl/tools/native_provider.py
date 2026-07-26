@@ -36,8 +36,19 @@ def tool(
     description: str,
     input_schema: dict[str, Any],
     safety_tier: SafetyTier = "readonly",
+    internal: bool = False,
+    provider_group: str | None = None,
 ):
-    """Decorator that registers a tool class."""
+    """Decorator that registers a tool class.
+
+    Args:
+        internal: Set True for smoke-test/dev tools (like `noop`) that should
+            not be advertised to the LLM.
+        provider_group: Optional name of the `providers.<group>` config knob
+            that gates this tool. If the corresponding provider is set to
+            "mock", the tool is skipped at NativeToolProvider construction.
+            None = always registered.
+    """
 
     def decorate(cls: type) -> type:
         if name in _REGISTRY:
@@ -55,6 +66,8 @@ def tool(
             input_schema=input_schema,
             safety_tier=safety_tier,
             provider_name="native",
+            internal=internal,
+            provider_group=provider_group,
         )
         _REGISTRY[name] = (cls, definition)
         return cls
@@ -76,12 +89,32 @@ class NativeToolProvider:
         (used to hand a MemoryStore into memory tools, etc.)
     """
 
-    def __init__(self, *, injected: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        *,
+        injected: dict[str, Any] | None = None,
+        providers: dict[str, str] | None = None,
+    ):
+        """Instantiate every registered tool, respecting provider_group gating.
+
+        Args:
+            injected: kwargs to match against tool constructor param names.
+            providers: mapping of `config.providers` (e.g. {'search': 'tavily'}).
+                Tools with a `provider_group` whose provider is "mock" are
+                skipped — they aren't instantiated and aren't listed.
+        """
         self._injected = injected or {}
+        providers = providers or {}
         self._instances: dict[str, Any] = {}
-        for name, (cls, _defn) in _REGISTRY.items():
+        self._skipped: dict[str, str] = {}
+        for name, (cls, defn) in _REGISTRY.items():
+            if defn.provider_group and providers.get(defn.provider_group) == "mock":
+                self._skipped[name] = defn.provider_group
+                continue
             kwargs = self._resolve_deps(cls)
             self._instances[name] = cls(**kwargs)
+        if self._skipped:
+            log.info("tools_skipped_by_provider_gate", skipped=self._skipped)
 
     async def close(self) -> None:
         """Called on pipeline shutdown. Drains any tool instance that owns
@@ -130,7 +163,10 @@ class NativeToolProvider:
         return kwargs
 
     async def list_tools(self) -> list[ToolDefinition]:
-        return [defn for _, defn in _REGISTRY.values()]
+        # Only tools we actually instantiated — skipped-by-provider-gate
+        # tools shouldn't be advertised even to inspection commands, since
+        # they aren't callable in this run.
+        return [defn for name, (_cls, defn) in _REGISTRY.items() if name in self._instances]
 
     async def execute(
         self,

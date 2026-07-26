@@ -243,8 +243,8 @@ class Pipeline:
 
         # Gather tool definitions in Anthropic's tools format so the reasoner
         # can offer them to Claude. ToolDefinition's name/description/input_schema
-        # already match the Anthropic tool shape; safety_tier and provider_name
-        # are our internal metadata and get filtered out.
+        # already match the Anthropic tool shape; safety_tier / provider_name /
+        # internal / provider_group are our internal metadata and get filtered.
         tools_for_llm = [
             {
                 "name": d.name,
@@ -252,7 +252,7 @@ class Pipeline:
                 "input_schema": d.input_schema,
             }
             for d in self.tool_registry.definitions()
-            if d.name != "noop"   # smoke-test tool; don't expose to Claude
+            if not d.internal   # dev-only tools (noop, future debug tools) hidden
         ]
 
         # Run reasoner + stream chunks to TTS.
@@ -263,6 +263,7 @@ class Pipeline:
             history=list(self._history),
             memories=list(memories),
             tools=tools_for_llm,
+            max_tool_iterations=self.config.tools.max_iterations,
         )
         assistant_text_parts: list[str] = []
         turn_start = time.time()

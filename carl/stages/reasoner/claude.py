@@ -112,7 +112,9 @@ class ClaudeReasoner:
             {"role": "user", "content": request.user_transcript},
         ]
         tools = request.tools or []
-        max_iterations = 5   # See backlog: wire to config.tools.max_iterations.
+        # Cap from request (populated by orchestrator from config.tools.max_iterations);
+        # fall back to 5 if the caller didn't specify.
+        max_iterations = request.max_tool_iterations if request.max_tool_iterations else 5
 
         try:
             for _iteration in range(max_iterations):

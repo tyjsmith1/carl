@@ -49,6 +49,7 @@ _ANSWER_TRUNCATE_TO = 1200     # cap the pre-synthesized answer if it alone exce
         "required": ["query"],
     },
     safety_tier="readonly",
+    provider_group="search",   # skipped when providers.search == "mock"
 )
 class WebSearchTool:
     def __init__(self, tavily_config: TavilyConfig | None = None):

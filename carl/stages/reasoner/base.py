@@ -25,6 +25,9 @@ class ReasonerTurn:
     # Anthropic tools format: {"name", "description", "input_schema"}.
     # Empty list = no tools available (Milestone-2 default; M3 populates it).
     tools: list[dict] = field(default_factory=list)
+    # Cap on the tool-use loop iterations for this turn. None = reasoner's
+    # own default (currently 5). Orchestrator populates from config.tools.max_iterations.
+    max_tool_iterations: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
