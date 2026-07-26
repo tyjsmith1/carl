@@ -167,5 +167,53 @@ def tools_list(ctx: click.Context) -> None:
         click.echo(f"  {defn.name} [{defn.safety_tier}] — {defn.description[:80]}")
 
 
+@cli.group()
+def audio() -> None:
+    """Audio device inspection + configuration helpers."""
+
+
+@audio.command("list")
+def audio_list() -> None:
+    """List sounddevice's visible audio devices in a form suitable for pasting into carl.local.yaml.
+
+    Devices marked (default in) / (default out) are what "input_device: default"
+    and "output_device: default" resolve to in the current shell. To pin a
+    specific device across shell / user changes, copy its name or index into
+    config/carl.local.yaml under the `audio:` block.
+    """
+    try:
+        import sounddevice as sd  # heavy import; lazy so `carl --version` stays fast
+    except OSError as e:
+        click.echo(f"sounddevice failed to load PortAudio: {e}", err=True)
+        click.echo("On macOS: `brew install portaudio` and reinstall sounddevice.", err=True)
+        raise SystemExit(1) from e
+
+    try:
+        default_in, default_out = sd.default.device
+    except (TypeError, ValueError):
+        default_in, default_out = None, None
+
+    devices = sd.query_devices()
+    click.echo("index  name                                             in  out  tags")
+    click.echo("─" * 78)
+    for i, dev in enumerate(devices):
+        tags = []
+        if i == default_in:
+            tags.append("default in")
+        if i == default_out:
+            tags.append("default out")
+        tag_str = ", ".join(tags) or ""
+        click.echo(
+            f"{i:>4}   {dev['name'][:48]:<48} {dev['max_input_channels']:>2}  "
+            f"{dev['max_output_channels']:>2}   {tag_str}"
+        )
+
+    click.echo()
+    click.echo("To pin a device, copy its name (or index) into config/carl.local.yaml:")
+    click.echo("  audio:")
+    click.echo("    input_device: \"MacBook Pro Microphone\"    # or an integer index")
+    click.echo("    output_device: \"MacBook Pro Speakers\"")
+
+
 if __name__ == "__main__":
     cli()
