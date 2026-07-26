@@ -68,6 +68,9 @@ class DeepgramSession:
         self._loop = asyncio.get_event_loop()
         self._final_parts: list[str] = []
         self._opened_at: float | None = None
+        self._bytes_sent = 0
+        self._send_count = 0
+        self._keepalive_task: asyncio.Task | None = None
 
     async def _open(self) -> None:
         # Lazy import so this file is safe to import without deepgram-sdk present.
@@ -95,6 +98,24 @@ class DeepgramSession:
         self._conn.start_listening()
         self._opened_at = time.monotonic()
         log.info("deepgram_stream_opened", model=self._config.model)
+        # Keep-alive every 5 s so we don't hit Deepgram's 10 s
+        # net0001 no-audio timeout during any quiet period.
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop(),
+                                                    name="deepgram_keepalive")
+
+    async def _keepalive_loop(self) -> None:
+        try:
+            while self._conn is not None:
+                await asyncio.sleep(5.0)
+                if self._conn is None:
+                    return
+                try:
+                    self._conn.send_keep_alive()
+                except Exception:  # noqa: BLE001
+                    log.exception("deepgram_keepalive_failed")
+                    return
+        except asyncio.CancelledError:
+            return
 
     def _on_message(self, message) -> None:
         # Called on Deepgram's thread. Bridge to asyncio.
@@ -132,10 +153,29 @@ class DeepgramSession:
         # It's sync + non-blocking (queues to a background writer thread).
         try:
             self._conn.send_media(pcm_i16)
+            self._bytes_sent += len(pcm_i16)
+            self._send_count += 1
+            # First-send timing tells us how long audio took to start flowing.
+            if self._send_count == 1 and self._opened_at is not None:
+                log.info("deepgram_first_send",
+                         since_open_ms=int((time.monotonic() - self._opened_at) * 1000),
+                         nbytes=len(pcm_i16))
         except Exception:  # noqa: BLE001
-            log.exception("deepgram_send_failed")
+            log.exception("deepgram_send_failed",
+                          send_count=self._send_count,
+                          bytes_sent=self._bytes_sent,
+                          since_open_ms=(
+                              int((time.monotonic() - self._opened_at) * 1000)
+                              if self._opened_at else -1
+                          ))
 
     async def close(self) -> str:
+        # Stop keep-alive first so it doesn't race with close_stream.
+        if self._keepalive_task is not None and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._keepalive_task
+        self._keepalive_task = None
         # Send CloseStream so Deepgram flushes any pending finals before
         # tearing down the WebSocket, then exit the context manager to
         # actually close the connection.
@@ -150,4 +190,8 @@ class DeepgramSession:
                 self._cm.__exit__(None, None, None)
             self._cm = None
             self._conn = None
+        log.info("deepgram_session_closed",
+                 bytes_sent=self._bytes_sent,
+                 send_count=self._send_count,
+                 final_parts=len(self._final_parts))
         return " ".join(self._final_parts).strip()
