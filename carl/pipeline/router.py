@@ -122,13 +122,14 @@ class AudioRouter:
     # ─── Output side ──────────────────────────────────────────────
 
     async def push_output(self, pcm: bytes) -> None:
-        """Push PCM bytes to the speaker. Async — waits if the queue is full."""
+        """Push PCM bytes to the speaker. Awaits if the queue is full — this
+        backpressures fast producers (OpenAI TTS downloads at network speed,
+        the audio callback drains at realtime playback speed). Without this
+        wait, a multi-sentence reply piles multiple speeches into the queue
+        and drops audio, producing choppy playback + apparent overlap."""
         if self._out_queue is None:
             return    # not started; drop silently (mock mode passes through)
-        try:
-            self._out_queue.async_q.put_nowait(pcm)
-        except asyncio.QueueFull:
-            log.warning("output_queue_full_dropping", nbytes=len(pcm))
+        await self._out_queue.async_q.put(pcm)
         self._output_bytes_written += len(pcm)
 
     async def abort_output(self) -> None:

@@ -205,6 +205,16 @@ class Pipeline:
             conversation_id=self._conversation_id, turn_id=self._current_turn.id,
         )
 
+        # If STT returned nothing (background noise, false-accept wake, mic issue),
+        # skip the LLM call — Claude 400s on empty user content, and we'd
+        # rather bail quietly than pile a confused reply on top of silence.
+        if not transcript_text.strip():
+            log.info("empty_transcript_skipping_reasoner",
+                     conv=self._conversation_id, turn=self._current_turn.id)
+            await self._end_turn()
+            self._transition(State.IDLE, trigger="empty_transcript")
+            return
+
         # Retrieve memories (empty in Milestone 1 — no memories saved yet).
         memories = await self.memory_store.retrieve(query=transcript_text)
         self.event_log.log(
