@@ -16,12 +16,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import sys
 
+import certifi
 import click
 import structlog
 from dotenv import load_dotenv
+
+# macOS Python 3.12 (Python.org installer) ships without a wired-up CA bundle,
+# so requests / websockets against Deepgram / Anthropic / OpenAI fail with
+# CERTIFICATE_VERIFY_FAILED. Point every stdlib SSL user at certifi's bundle.
+# Skipped if the user has already set SSL_CERT_FILE explicitly.
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 
 from carl.config import Config
 from carl.events import EventLog

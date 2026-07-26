@@ -1,8 +1,14 @@
 """Deepgram Nova-3 streaming STT stage. See docs/specs/pipeline.md.
 
-Uses the deepgram-sdk v7+ API surface: `client.listen.v2.connect(...)` as a
-context manager. Older v3/v4 patterns (`listen.asynclive.v("1")`,
-`LiveOptions`, `LiveTranscriptionEvents`) are dead — do not port them.
+Uses the deepgram-sdk v7+ API surface: `client.listen.v1.connect(...)` as a
+context manager.
+
+Naming trap (verified empirically 2026-07-26): in SDK v7, `v1` is the general
+STT streaming surface — Nova-3, all the endpointing / interim / smart-format
+knobs — while `v2` is a *different* WebSocket API for the Flux voice-agent
+models only (`flux-general-en`, `flux-general-multi`). Use `v1` for Nova-3.
+Older v3/v4 patterns (`listen.asynclive.v("1")`, `LiveOptions`,
+`LiveTranscriptionEvents`) are dead — do not port them.
 
 Session lifecycle:
     stt = DeepgramSTT(cfg)
@@ -66,7 +72,7 @@ class DeepgramSession:
         # Lazy import so this file is safe to import without deepgram-sdk present.
         from deepgram.core.events import EventType
 
-        self._cm = self._client.listen.v2.connect(
+        self._cm = self._client.listen.v1.connect(
             model=self._config.model,
             language=self._config.language,
             encoding="linear16",
