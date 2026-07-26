@@ -33,8 +33,10 @@ carl.db-*
 *.log
 consolidation-proposals-*.json
 
-# Wake-word models are per-machine + expire on free tier; don't commit
+# Wake-word models are per-machine (or trained per-user); don't commit
 config/wake_words/*.ppn
+config/wake_words/*.onnx
+config/wake_words/*.tflite
 
 # Claude Code local settings (per-user WebFetch allowlists etc.)
 .claude/settings.local.json

@@ -29,6 +29,7 @@ docs/
   ARCHITECTURE.md                  ← whole system at a glance
   DECISIONS.md                     ← ADR log of key choices
   BACKLOG.md                       ← deferred fixes, milestone callouts, pre-prod checklist
+  train-hey-carl.md                ← how-to: swap "hey Jarvis" for a custom "hey Carl" wake word
   specs/                           ← deep spec per subsystem
     pipeline.md
     reasoner.md
