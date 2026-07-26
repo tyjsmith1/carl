@@ -126,6 +126,31 @@ class AudioRouter:
         for user speech."""
         self._ring.clear()
 
+    async def wait_output_drained(self, timeout: float = 30.0) -> None:
+        """Wait until all queued output audio has been consumed by the audio
+        callback AND has had time to actually play through the OS/OpenAL
+        buffer. Approximates 'the speakers are silent'.
+
+        This is what the follow-up window needs before opening VAD — TTS
+        producers finish streaming (tts_speak_end fires) while several
+        seconds of audio may still be sitting in the queue playing back.
+        A fixed guard delay can't cover that; polling the queue does."""
+        if self._out_queue is None:
+            return
+        import time as _time
+        deadline = _time.monotonic() + timeout
+        # Poll until the queue is empty. Cheap: just a size check.
+        while self._out_queue.async_q.qsize() > 0:
+            if _time.monotonic() > deadline:
+                log.warning("output_drain_timeout",
+                            remaining_chunks=self._out_queue.async_q.qsize())
+                return
+            await asyncio.sleep(0.05)
+        # Queue empty; wait one block's worth for the last block already
+        # in-flight to finish playing, plus a small OS-buffer margin.
+        tail_seconds = (self.OUT_BLOCK_SIZE / self.OUT_SAMPLE_RATE) + 0.05
+        await asyncio.sleep(tail_seconds)
+
     # ─── Output side ──────────────────────────────────────────────
 
     async def push_output(self, pcm: bytes) -> None:

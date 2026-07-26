@@ -95,7 +95,10 @@ conversation:
   tts_timeout_seconds: 10
   history_turns: 10
   follow_up_ms: 7000
-  followup_guard_ms: 600
+  # followup_guard_ms replaced by router.wait_output_drained() — the guard
+  # was a fixed timer that couldn't cover the actual TTS playback tail
+  # (audio_duration_ms can be many seconds after the producer finishes
+  # streaming). Kept in schema for back-compat; unused at runtime.
   max_followup_turns: 3
   no_speech_timeout_ms: 5000
 

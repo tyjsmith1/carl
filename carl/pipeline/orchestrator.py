@@ -294,11 +294,12 @@ class Pipeline:
         if not transcript_text.strip():
             log.info("empty_transcript_skipping_reasoner",
                      conv=self._conversation_id, turn=self._current_turn.id)
-            # Delete the just-started turn row instead of persisting an
-            # orphan with NULL user_transcript/assistant_text. Ambient-noise
-            # VAD false-triggers during follow-up would otherwise pile up
-            # empty rows in the turns table and skew analytics.
-            await self._discard_turn()
+            # Persist the turn row with NULL user_transcript rather than
+            # DELETE it — the events table has a FK to turns.id and
+            # events were already logged for this turn (wake_detected,
+            # stt_final). Analytics that care about "real turns" should
+            # filter `WHERE user_transcript IS NOT NULL AND != ''`.
+            await self._end_turn()
             # End the conversation loop entirely — waiting for follow-up
             # would just re-trigger on more ambient noise.
             self._transition(State.IDLE, trigger="empty_transcript")
@@ -508,22 +509,32 @@ class Pipeline:
         follow_up_ms (loop into a new turn), False on timeout OR shutdown
         (end conversation).
 
-        Uses a small guard delay first so that the trailing echo of Carl's
-        own TTS (still bleeding out of the speakers on desktop setups without
-        AEC) doesn't false-trigger VAD as if it were the user. See BACKLOG
-        for proper acoustic echo cancellation."""
-        # Guard: let TTS tail-echo dissipate before we start listening. Race
-        # against shutdown so Ctrl-C during the guard bails immediately.
-        guard_seconds = self.config.conversation.followup_guard_ms / 1000
-        if guard_seconds > 0:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._shutdown.wait(), timeout=guard_seconds)
+        Waits for actual audio playback to drain before opening VAD — TTS
+        producers finish streaming while the speakers are still emitting
+        seconds of audio, which the mic would otherwise pick up as 'user
+        speech' and loop back on itself. See BACKLOG for proper acoustic
+        echo cancellation; this drain-wait is the interim fix."""
+        # Wait for TTS audio to actually finish playing (not just streaming).
+        # Race against shutdown so Ctrl-C bails immediately even mid-drain.
+        drain_task = asyncio.create_task(self.router.wait_output_drained())
+        shutdown_wait_task = asyncio.create_task(self._shutdown.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                [drain_task, shutdown_wait_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
             if self._shutdown.is_set():
                 return False
+        finally:
+            for t in (drain_task, shutdown_wait_task):
+                if not t.done():
+                    t.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
 
-        # Drain any audio that piled up in the router's ring buffer during
-        # the guard delay — otherwise the very first VAD frame is the tail
-        # of Carl's own speech.
+        # Drain the ring buffer — any mic frames captured DURING the drain
+        # wait are tail-echo of Carl's own speech. Don't let them be the
+        # first thing VAD or the next turn's STT sees.
         with contextlib.suppress(Exception):
             await self.router.drain_ring()
 
@@ -693,21 +704,6 @@ class Pipeline:
             "UPDATE conversations SET turn_count = turn_count + 1 WHERE id = ?",
             (self._conversation_id,),
         )
-        self._current_turn = None
-
-    async def _discard_turn(self) -> None:
-        """DELETE the current turn row instead of persisting it. Used when
-        the utterance was empty (ambient-noise VAD false-trigger) and we
-        don't want an orphan row polluting analytics or the turn_index."""
-        if self._current_turn is None:
-            return
-        await self._db_execute(
-            "DELETE FROM turns WHERE id = ?", (self._current_turn.id,),
-        )
-        # Roll back the turn_index bump from _start_turn — otherwise the
-        # next real turn gets a non-sequential index.
-        assert self._conversation_id is not None
-        self._turn_index_by_conv[self._conversation_id] -= 1
         self._current_turn = None
 
     def _log_session_start(self) -> None:
