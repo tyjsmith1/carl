@@ -26,6 +26,7 @@ in `close()`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 
@@ -97,21 +98,24 @@ class DeepgramSession:
 
     def _on_message(self, message) -> None:
         # Called on Deepgram's thread. Bridge to asyncio.
+        # In SDK v7, listen.v1 messages are typed pydantic objects. The one
+        # we care about is ListenV1Results (type="Results"); UtteranceEnd,
+        # SpeechStarted, and Metadata also arrive here but we ignore them
+        # for now (VAD is running client-side).
         try:
-            msg_type = getattr(message, "type", "")
-            if msg_type == "Transcript" or msg_type == "Results":
-                # Nova-3 messages: message.channel.alternatives[0].transcript
-                alt = message.channel.alternatives[0]
-                text = alt.transcript
-                is_final = bool(getattr(message, "is_final", False))
-                confidence = float(getattr(alt, "confidence", 0.0))
-                if is_final and text:
-                    self._final_parts.append(text)
-                self._loop.call_soon_threadsafe(
-                    asyncio.create_task,
-                    self._on_transcript(Transcript(text=text, is_final=is_final,
-                                                   confidence=confidence)),
-                )
+            if getattr(message, "type", "") != "Results":
+                return
+            alt = message.channel.alternatives[0]
+            text = alt.transcript
+            is_final = bool(getattr(message, "is_final", False))
+            confidence = float(getattr(alt, "confidence", 0.0))
+            if is_final and text:
+                self._final_parts.append(text)
+            self._loop.call_soon_threadsafe(
+                asyncio.create_task,
+                self._on_transcript(Transcript(text=text, is_final=is_final,
+                                               confidence=confidence)),
+            )
         except Exception:  # noqa: BLE001
             log.exception("deepgram_message_parse_failed")
 
@@ -124,23 +128,26 @@ class DeepgramSession:
     async def send(self, pcm_i16: bytes) -> None:
         if self._conn is None:
             return
-        # Deepgram v7 conn.send is sync + non-blocking (queues to background thread).
-        # Wrap in try/except so a mid-utterance transport hiccup doesn't crash us.
+        # V1SocketClient has `send_media(bytes)` for audio, not `.send()`.
+        # It's sync + non-blocking (queues to a background writer thread).
         try:
-            self._conn.send(pcm_i16)
+            self._conn.send_media(pcm_i16)
         except Exception:  # noqa: BLE001
             log.exception("deepgram_send_failed")
 
     async def close(self) -> str:
-        # Exit the context manager to close cleanly (sends CloseStream, waits for final finalization).
+        # Send CloseStream so Deepgram flushes any pending finals before
+        # tearing down the WebSocket, then exit the context manager to
+        # actually close the connection.
+        if self._conn is not None:
+            with contextlib.suppress(Exception):
+                self._conn.send_close_stream()
+        # Give Deepgram a moment to deliver the last final transcript
+        # after CloseStream but before the socket goes away.
+        await asyncio.sleep(0.15)
         if self._cm is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._cm.__exit__(None, None, None)
-            except Exception:  # noqa: BLE001
-                log.exception("deepgram_close_failed")
             self._cm = None
             self._conn = None
-        # Give the Deepgram thread a moment to deliver any final transcript
-        # that arrived after CloseStream.
-        await asyncio.sleep(0.05)
         return " ".join(self._final_parts).strip()
