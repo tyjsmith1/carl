@@ -78,9 +78,9 @@ These are things that don't matter while Carl runs only on Tyler's laptop but be
 
 ### Version control + collaboration
 
-- [ ] `git init` + first commit. Currently not a git repo — no history, no backup, no undo. Every code change is one `rm -rf` away from oblivion. **Do this before Milestone 2.**
-- [ ] Push to a remote (private GitHub repo). Backup + history off-machine.
 - [ ] `LICENSE` file. Personal project — MIT or "All rights reserved" both fine, but pick one.
+- [ ] Pre-commit hook running `ruff check` + `pytest -q` to catch regressions before they land. Cheap to add now with just one working commit.
+- [ ] Branch protection on `main` — even solo, prevents accidental force-push and requires PRs so CI can gate them. Enable once CI is set up.
 
 ### CI + quality gates
 
