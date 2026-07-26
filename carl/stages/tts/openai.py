@@ -82,6 +82,9 @@ class OpenAITTS:
         log.info("tts_speak_begin", chars=len(text),
                  text_preview=text[:60].strip())
 
+        # Do NOT swallow exceptions here — the orchestrator needs to see them
+        # so it can transition to ERROR state / speak an apology instead of
+        # cheerfully logging tts_complete for silence.
         try:
             async with self._client.audio.speech.with_streaming_response.create(**params) as response:
                 async for chunk in response.iter_bytes(chunk_size=4096):
@@ -89,11 +92,9 @@ class OpenAITTS:
                         break
                     await chunk_out(chunk)
                     bytes_sent += len(chunk)
-        except Exception:  # noqa: BLE001
-            log.exception("openai_tts_failed", chars=len(text))
-
-        # ~24 kHz * 2 bytes/sample = 48 KB/sec of audio
-        duration_ms = int(bytes_sent / (24000 * 2) * 1000)
-        log.info("tts_speak_end", chars=len(text), bytes=bytes_sent,
-                 audio_duration_ms=duration_ms,
-                 elapsed_ms=int((time.monotonic() - t0) * 1000))
+        finally:
+            # ~24 kHz * 2 bytes/sample = 48 KB/sec of audio
+            duration_ms = int(bytes_sent / (24000 * 2) * 1000)
+            log.info("tts_speak_end", chars=len(text), bytes=bytes_sent,
+                     audio_duration_ms=duration_ms,
+                     elapsed_ms=int((time.monotonic() - t0) * 1000))

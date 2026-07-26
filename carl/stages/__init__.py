@@ -106,28 +106,36 @@ def build_stages(config: Config) -> Stages:
     """Instantiate the stage impls named in config.providers.*.
     Each impl is passed its own config subsection (or None if not set)."""
 
-    def _sub(section: Any, name: str) -> Any:
-        # e.g. section=config.wake_word, name="porcupine" → config.wake_word.porcupine
-        # For "mock", we pass None — mocks don't need config.
-        if name == "mock":
+    def _sub(stage_name: str, section: Any, provider_name: str) -> Any:
+        """Return the config block for the selected provider, or raise a clear
+        error if the block is missing (rather than let the impl crash later
+        with AttributeError on a None config)."""
+        if provider_name == "mock":
             return None
-        return getattr(section, name, None)
+        sub = getattr(section, provider_name, None)
+        if sub is None:
+            raise ValueError(
+                f"providers.{stage_name} is '{provider_name}' but "
+                f"{stage_name}.{provider_name} block is missing from config. "
+                f"Add it to config/carl.yaml (or carl.local.yaml)."
+            )
+        return sub
 
     return Stages(
         wake_word=_WAKE_WORD_IMPLS[config.providers.wake_word](
-            _sub(config.wake_word, config.providers.wake_word)
+            _sub("wake_word", config.wake_word, config.providers.wake_word)
         ),
         vad=_VAD_IMPLS[config.providers.vad](
-            _sub(config.vad, config.providers.vad)
+            _sub("vad", config.vad, config.providers.vad)
         ),
         stt=_STT_IMPLS[config.providers.stt](
-            _sub(config.stt, config.providers.stt)
+            _sub("stt", config.stt, config.providers.stt)
         ),
         reasoner=_REASONER_IMPLS[config.providers.reasoner](
-            _sub(config.reasoner, config.providers.reasoner)
+            _sub("reasoner", config.reasoner, config.providers.reasoner)
         ),
         tts=_TTS_IMPLS[config.providers.tts](
-            _sub(config.tts, config.providers.tts)
+            _sub("tts", config.tts, config.providers.tts)
         ),
     )
 

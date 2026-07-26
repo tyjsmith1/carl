@@ -66,7 +66,7 @@ class DeepgramSession:
         self._on_transcript = on_transcript
         self._cm = None                 # holds the connection context manager
         self._conn = None               # the connection object from __enter__
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()   # DeepgramSession is always constructed from awaited open_stream()
         self._final_parts: list[str] = []
         self._opened_at: float | None = None
         self._bytes_sent = 0
@@ -91,29 +91,41 @@ class DeepgramSession:
         )
         self._conn = self._cm.__enter__()
 
-        # Handlers run on Deepgram's own thread — bridge to our asyncio loop
-        # via loop.call_soon_threadsafe so on_transcript is awaited from the
-        # right context.
-        self._conn.on(EventType.MESSAGE, self._on_message)
-        self._conn.on(EventType.ERROR, self._on_error)
-        self._conn.on(EventType.CLOSE, self._on_close)
-        # start_listening() is a BLOCKING receive loop — it runs the
-        # WebSocket read pump until close. Must be on its own thread; if
-        # called from the asyncio loop it blocks the whole app for the
-        # duration of the session (which then races Deepgram's 10s
-        # no-audio timeout and closes with 1011).
-        self._listen_thread = threading.Thread(
-            target=self._conn.start_listening,
-            name="deepgram_listen",
-            daemon=True,
-        )
-        self._listen_thread.start()
-        self._opened_at = time.monotonic()
-        log.info("deepgram_stream_opened", model=self._config.model)
-        # Keep-alive every 5 s so we don't hit Deepgram's 10 s
-        # net0001 no-audio timeout during any quiet period.
-        self._keepalive_task = asyncio.create_task(self._keepalive_loop(),
-                                                    name="deepgram_keepalive")
+        # If ANY step from here to `deepgram_stream_opened` fails, we must
+        # exit the context manager — otherwise the WebSocket + Deepgram's
+        # background threads leak. `open_stream` never returns a session in
+        # that case, so the caller can't call `close()` to clean up.
+        try:
+            # Handlers run on Deepgram's own thread — bridge to our asyncio loop
+            # via loop.call_soon_threadsafe so on_transcript is awaited from the
+            # right context.
+            self._conn.on(EventType.MESSAGE, self._on_message)
+            self._conn.on(EventType.ERROR, self._on_error)
+            self._conn.on(EventType.CLOSE, self._on_close)
+            # start_listening() is a BLOCKING receive loop — it runs the
+            # WebSocket read pump until close. Must be on its own thread; if
+            # called from the asyncio loop it blocks the whole app for the
+            # duration of the session (which then races Deepgram's 10s
+            # no-audio timeout and closes with 1011).
+            self._listen_thread = threading.Thread(
+                target=self._conn.start_listening,
+                name="deepgram_listen",
+                daemon=True,
+            )
+            self._listen_thread.start()
+            self._opened_at = time.monotonic()
+            log.info("deepgram_stream_opened", model=self._config.model)
+            # Keep-alive every 5 s so we don't hit Deepgram's 10 s
+            # net0001 no-audio timeout during any quiet period.
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop(),
+                                                        name="deepgram_keepalive")
+        except Exception:
+            log.exception("deepgram_open_failed_after_enter — closing CM")
+            with contextlib.suppress(Exception):
+                self._cm.__exit__(None, None, None)
+            self._cm = None
+            self._conn = None
+            raise
 
     async def _keepalive_loop(self) -> None:
         try:
@@ -130,11 +142,10 @@ class DeepgramSession:
             return
 
     def _on_message(self, message) -> None:
-        # Called on Deepgram's thread. Bridge to asyncio.
-        # In SDK v7, listen.v1 messages are typed pydantic objects. The one
-        # we care about is ListenV1Results (type="Results"); UtteranceEnd,
-        # SpeechStarted, and Metadata also arrive here but we ignore them
-        # for now (VAD is running client-side).
+        # Called on Deepgram's listener thread. In SDK v7, listen.v1 messages
+        # are typed pydantic objects. The one we care about is ListenV1Results
+        # (type="Results"); UtteranceEnd, SpeechStarted, and Metadata also
+        # arrive here but we ignore them for now (VAD is running client-side).
         try:
             if getattr(message, "type", "") != "Results":
                 return
@@ -144,11 +155,13 @@ class DeepgramSession:
             confidence = float(getattr(alt, "confidence", 0.0))
             if is_final and text:
                 self._final_parts.append(text)
-            self._loop.call_soon_threadsafe(
-                asyncio.create_task,
-                self._on_transcript(Transcript(text=text, is_final=is_final,
-                                               confidence=confidence)),
-            )
+            # Bridge to the asyncio loop. `run_coroutine_threadsafe` is the
+            # correct primitive vs `call_soon_threadsafe(create_task, coro)`:
+            # the former returns a `concurrent.futures.Future` that surfaces
+            # coroutine exceptions (instead of them vanishing into a GC'd
+            # Task warning), and it's the documented cross-thread bridge.
+            transcript = Transcript(text=text, is_final=is_final, confidence=confidence)
+            asyncio.run_coroutine_threadsafe(self._on_transcript(transcript), self._loop)
         except Exception:  # noqa: BLE001
             log.exception("deepgram_message_parse_failed")
 
@@ -161,10 +174,14 @@ class DeepgramSession:
     async def send(self, pcm_i16: bytes) -> None:
         if self._conn is None:
             return
-        # V1SocketClient has `send_media(bytes)` for audio, not `.send()`.
-        # It's sync + non-blocking (queues to a background writer thread).
+        # V1SocketClient.send_media(bytes) is documented as non-blocking but
+        # actually calls `websockets.sync` send() which BLOCKS on the OS
+        # send buffer. Under network stall a single frame can block the
+        # asyncio loop for hundreds of ms, which stalls the router dispatch
+        # (input frames drop, VAD stops receiving, speech_end never fires).
+        # `asyncio.to_thread` moves the block off the loop.
         try:
-            self._conn.send_media(pcm_i16)
+            await asyncio.to_thread(self._conn.send_media, pcm_i16)
             self._bytes_sent += len(pcm_i16)
             self._send_count += 1
             # First-send timing tells us how long audio took to start flowing.

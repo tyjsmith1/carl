@@ -89,6 +89,8 @@ class Pipeline:
         self._turn_index_by_conv: dict[str, int] = {}
         self._history: list[Message] = []
         self._tts_cancel: asyncio.Event = asyncio.Event()
+        # Live STT session held so the dispatch error path can close it.
+        self._current_stt = None
 
         # Set in run() based on whether the wake stage is audio-driven.
         # Determines whether _on_wake_detected pumps real audio through VAD/STT
@@ -157,11 +159,15 @@ class Pipeline:
                 log.warning("unhandled_event", event_type=event.type, state=self.state.value)
         except Exception:  # noqa: BLE001
             log.exception("dispatch_failed", event_type=event.type, state=self.state.value)
-            # Clean up half-completed turn state so we don't leak orphan DB rows
-            # or corrupt turn_index bookkeeping. Best-effort — reasoner.abort()
-            # cancels any in-flight streaming, _end_turn writes whatever we have.
+            # Clean up half-completed turn state so we don't leak orphan DB
+            # rows, sockets, or corrupt turn_index bookkeeping. Best-effort —
+            # each step is guarded so a failure in one doesn't skip the rest.
             with contextlib.suppress(Exception):
                 await self.stages.reasoner.abort()
+            if self._current_stt is not None:
+                with contextlib.suppress(Exception):
+                    await self._current_stt.close()
+                self._current_stt = None
             with contextlib.suppress(Exception):
                 await self._end_turn()
             self._transition(State.IDLE, trigger="error_recovery")
@@ -187,14 +193,18 @@ class Pipeline:
         # Open STT session. Mock returns canned transcript on close();
         # real STT streams audio via the router until VAD fires speech_end.
         stt_session = await self.stages.stt.open_stream(self._on_transcript)
+        self._current_stt = stt_session   # so _dispatch's error path can close it
 
-        if self._audio_mode:
-            transcript_text = await self._record_utterance_real(stt_session)
-        else:
-            # Mock path: send a dummy frame to trigger the fake partial,
-            # then close to get the canned final transcript.
-            await stt_session.send(b"")
-            transcript_text = await stt_session.close()
+        try:
+            if self._audio_mode:
+                transcript_text = await self._record_utterance_real(stt_session)
+            else:
+                # Mock path: send a dummy frame to trigger the fake partial,
+                # then close to get the canned final transcript.
+                await stt_session.send(b"")
+                transcript_text = await stt_session.close()
+        finally:
+            self._current_stt = None
 
         self._transition(State.THINKING, trigger=SPEECH_END)
         assert self._current_turn is not None
@@ -356,29 +366,41 @@ class Pipeline:
         self.router.register("stt", stt_consumer)
         self.router.register("vad", vad_consumer)
 
-        # Prepend the router's ring buffer to STT so the wake phrase +
-        # start-of-utterance are captured (real STT streams have startup
-        # latency; the ring buffer holds audio from before the stream existed).
-        await self.router.replay_ring(stt_consumer)
-        # VAD sees only live audio (replaying the wake phrase into VAD would
-        # immediately fire speech_end at t=0).
-        self.router.activate("stt", "vad")
-
+        # try/finally guarantees router consumers are deactivated and drain
+        # tasks are cancelled on ANY exception (STT close error, TimeoutError
+        # cancel-race, VAD.process raise). Without this, drain tasks stay
+        # blocked on Queue.get() forever and a subsequent turn's re-register
+        # leaves the old closures holding stale queues in memory.
         try:
-            await asyncio.wait_for(
-                speech_end.wait(),
-                timeout=self.config.conversation.utterance_max_seconds,
-            )
-        except TimeoutError:
-            log.warning("utterance_timeout",
-                        seconds=self.config.conversation.utterance_max_seconds)
+            # Prepend the router's ring buffer to STT so the wake phrase +
+            # start-of-utterance are captured (real STT streams have startup
+            # latency; the ring buffer holds audio from before the stream existed).
+            await self.router.replay_ring(stt_consumer)
+            # VAD sees only live audio (replaying the wake phrase into VAD would
+            # immediately fire speech_end at t=0).
+            self.router.activate("stt", "vad")
 
-        # Stop routing audio and drain the queues cleanly.
-        self.router.deactivate("stt", "vad")
-        stt_frames.put_nowait(None)
-        vad_frames.put_nowait(None)
-        await stt_task
-        await vad_task
+            try:
+                await asyncio.wait_for(
+                    speech_end.wait(),
+                    timeout=self.config.conversation.utterance_max_seconds,
+                )
+            except TimeoutError:
+                log.warning("utterance_timeout",
+                            seconds=self.config.conversation.utterance_max_seconds)
+        finally:
+            # Always: stop routing, signal drain tasks to exit, wait for them.
+            self.router.deactivate("stt", "vad")
+            with contextlib.suppress(asyncio.QueueFull):
+                stt_frames.put_nowait(None)
+                vad_frames.put_nowait(None)
+            # Cancel then await — if a drain task is blocked in stt.send()
+            # under a network stall, cancel unblocks it.
+            for task in (stt_task, vad_task):
+                if not task.done():
+                    task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
         return await stt_session.close()
 

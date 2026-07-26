@@ -51,6 +51,10 @@ class OpenWakeWord:
         self._on_wake: OnWakeCallback | None = None
         self._buffer = bytearray()
         self._last_fired_at = 0.0
+        # Strong refs to the fire-and-forget wake tasks so Python's asyncio
+        # loop doesn't GC them mid-flight (3.11+ only weakly references
+        # running tasks). Each task removes itself via done_callback.
+        self._pending_wake_tasks: set[asyncio.Task] = set()
 
         log.info("openwakeword_loaded",
                  model=config.model_name,
@@ -99,5 +103,8 @@ class OpenWakeWord:
 
         # We're on the asyncio loop (dispatch task) — safe to create_task
         # directly. The task is fire-and-forget because AudioRouter's dispatch
-        # continues immediately with the next frame.
-        asyncio.create_task(self._on_wake({"keyword": key, "score": score}))
+        # continues immediately with the next frame, so we hold a strong ref
+        # in a set to prevent GC before completion (Python 3.11+ semantics).
+        task = asyncio.create_task(self._on_wake({"keyword": key, "score": score}))
+        self._pending_wake_tasks.add(task)
+        task.add_done_callback(self._pending_wake_tasks.discard)

@@ -101,7 +101,10 @@ def run(ctx: click.Context) -> None:
     tool_registry = ToolRegistry(providers=[native_provider])
 
     event_log = EventLog(db_path, stdout_mirror=config.logging.event_log_stdout)
-    router = AudioRouter()
+    router = AudioRouter(
+        input_device=config.audio.input_device,
+        output_device=config.audio.output_device,
+    )
     pipeline = Pipeline(
         config=config,
         stages=stages,
