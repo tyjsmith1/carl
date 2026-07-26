@@ -40,6 +40,15 @@ Cross-linked from the specific milestone plan. When starting a milestone, read i
 - **Real `AudioRouter` implementation** — Milestone-1 has a stub; real sounddevice + janus queue bridge arrives here. Reshape `activate`/`deactivate` semantics per deferred fix above.
 - **`.ppn` file expiration** — Picovoice free-tier custom wake-word files expire after ~30 days. Add a startup check that surfaces expiration early with instructions to regenerate. (`docs/specs/pipeline.md`)
 
+### Milestone 2 follow-ups (post-completion, 2026-07-26)
+
+- [med] **Latency measurement** — M2 spec targeted ~1-1.5s from stop-talking to first-audio. Now that the loop works, add p50/p95 tracking of `turns.latency_ms_to_first_audio` and a `carl stats` subcommand. If we're consistently >2s, look at prefetching first-sentence TTS while Claude is still streaming.
+- [med] **Multi-sentence TTS pipelining** — currently sentences run serially: Claude finishes → sentence 1 TTS → play → sentence 2 TTS → play. With backpressure that's fine, but there's ~1-2s of network dead time between sentences. Could dispatch next sentence's TTS request in parallel with the current sentence playing. Adds complexity; wait until it feels bad.
+- [low] **Deepgram Flux model evaluation** — Milestone-1.5 flagged Flux (`client.listen.v2.connect`, `flux-general-en`) as a newer voice-agent-optimized model with integrated turn detection. Would eliminate our client-side Silero VAD from the utterance-end path. Different API surface (see `docs/specs/pipeline.md` open questions). Worth testing.
+- [low] **`output_queue_full_dropping` should never fire now that push is blocking** — keep the log as a tripwire but if it never fires after a few days of use, remove the code path.
+- [med] **State machine: SPEAKING → RECORDING transitions before playback finishes** — currently we transition to RECORDING (follow-up window) as soon as `tts.speak()` returns, but audio is still playing from the router queue. User hears "listening" state before Carl actually stops talking. Track "output queue drained" and gate the transition on it.
+- [low] **Kill `HTTP Request:` httpx logs** — the anthropic/openai SDKs log every request to stderr at INFO level. Clutters our output. Filter in `_setup_logging`.
+
 ### Milestone 3 (Web search + tool orchestration)
 
 - **Tool description iteration** — the `description` field is the LLM's prompt for tool selection. Expect a week of usage where we watch for over/under-triggering and refine wording. Log every tool call decision so we can spot patterns. (`docs/specs/tools.md`)
