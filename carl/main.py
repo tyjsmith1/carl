@@ -98,9 +98,20 @@ def run(ctx: click.Context) -> None:
     # web_search.py, memory tools (M4), etc. are picked up alongside the
     # noop example tool.
     NativeToolProvider.discover("carl.tools")
-    native_provider = NativeToolProvider(
-        injected={"memory_store": memory_store}
-    )
+
+    # Honor providers.search: mock → deregister web_search so Claude
+    # doesn't see the Tavily-backed tool. See docs/BACKLOG.md for the
+    # cleaner @tool(provider_group=...) design; this is the minimal fix.
+    if config.providers.search == "mock":
+        from carl.tools.native_provider import _REGISTRY
+        _REGISTRY.pop("web_search", None)
+
+    # Inject config subsections so tools that need them get the right values
+    # (currently just tavily_config for WebSearchTool). Add more as tools land.
+    native_provider = NativeToolProvider(injected={
+        "memory_store": memory_store,
+        "tavily_config": config.search.tavily,
+    })
     tool_registry = ToolRegistry(providers=[native_provider])
 
     event_log = EventLog(db_path, stdout_mirror=config.logging.event_log_stdout)
@@ -178,7 +189,13 @@ def tools_list(ctx: click.Context) -> None:
     # web_search.py, memory tools (M4), etc. are picked up alongside the
     # noop example tool.
     NativeToolProvider.discover("carl.tools")
-    provider = NativeToolProvider(injected={"memory_store": memory_store})
+    if config.providers.search == "mock":
+        from carl.tools.native_provider import _REGISTRY
+        _REGISTRY.pop("web_search", None)
+    provider = NativeToolProvider(injected={
+        "memory_store": memory_store,
+        "tavily_config": config.search.tavily,
+    })
     registry = ToolRegistry(providers=[provider])
     asyncio.run(registry.initialize())
     for defn in registry.definitions():

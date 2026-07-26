@@ -138,6 +138,13 @@ class Pipeline:
         if close is not None:
             with contextlib.suppress(Exception):
                 await close()
+        # Close tool provider resources (httpx pools, etc.) so we don't leak
+        # aiohttp connectors or hang shutdown on in-flight requests.
+        for provider in getattr(self.tool_registry, "_providers", []):
+            close = getattr(provider, "close", None)
+            if close is not None:
+                with contextlib.suppress(Exception):
+                    await close()
         self._log_session_end()
         await self.event_log.stop(drain=True)
 

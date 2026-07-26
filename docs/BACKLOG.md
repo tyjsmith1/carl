@@ -40,6 +40,12 @@ Cross-linked from the specific milestone plan. When starting a milestone, read i
 - **Real `AudioRouter` implementation** — Milestone-1 has a stub; real sounddevice + janus queue bridge arrives here. Reshape `activate`/`deactivate` semantics per deferred fix above.
 - **`.ppn` file expiration** — Picovoice free-tier custom wake-word files expire after ~30 days. Add a startup check that surfaces expiration early with instructions to regenerate. (`docs/specs/pipeline.md`)
 
+### M3 code-review deferred (2026-07-26, review pass on M3 diff)
+
+- [low] **Reasoner's `max_iterations = 5` is a Python literal, not `config.tools.max_iterations`** — two knobs for the same behavior, wrong one honored. Fix: read `self._config.max_iterations` (add to `ClaudeReasonerConfig`) or thread `ToolsConfig` in. (`carl/stages/reasoner/claude.py:110`, review finding #12)
+- [low] **Internal-tool filter is hardcoded by name (`d.name != "noop"`)** — every future dev/test tool leaks to Claude unless someone updates the string. Fix: add `internal: bool = False` to `ToolDefinition`, mark noop `@tool(..., internal=True)`, filter on `not d.internal`. (`carl/pipeline/orchestrator.py:248`, review finding #14)
+- [med] **`providers.search` config knob currently gated by an ad-hoc `_REGISTRY.pop("web_search")` in main.py** — works but hacky. Proper design: `@tool(provider_group="search")` decorator arg, `discover()` filters by matching `config.providers.<group>` == "mock". Would generalize cleanly for M4 memory tools ("memory" group) and MCP later. (`carl/main.py:104`, review finding #7 — code works but architecture is provisional)
+
 ### M2 code-review deferred (2026-07-26, review pass on M2 diff)
 
 - [med] **Deepgram `close()` 150ms grace period sometimes too short** — Deepgram's final Results after `send_close_stream` can arrive 200-400ms later. When it doesn't arrive in time, `_final_parts` is empty and orchestrator silently skips the reasoner via the empty-transcript guard. Real user-visible symptom: "sometimes Carl just doesn't respond". Fix: wait for the CLOSE event (or up to 500ms) instead of a fixed sleep. (`carl/stages/stt/deepgram.py:199`, review finding #9)

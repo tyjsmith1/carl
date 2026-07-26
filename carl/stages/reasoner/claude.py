@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import structlog
+import yaml
 
 from carl.config.schema import ClaudeReasonerConfig
 from carl.stages.reasoner.base import (
@@ -70,9 +72,13 @@ class ClaudeReasoner:
 
         self._current_stream = None
         self._aborted = False
-        # Filler-phrase state, loaded lazily on first tool call.
-        self._filler_phrases: dict[str, list[str]] | None = None
+        # Filler-phrase state — eagerly loaded so first-tool-call latency
+        # doesn't pay for filesystem I/O on the hot path.
+        self._filler_phrases: dict[str, list[str]] = {}
         self._last_filler: dict[str, str] = {}
+        self._load_filler_phrases()
+        # Strong refs to fire-and-forget filler tasks (Python 3.11+ GC).
+        self._pending_filler_tasks: set[asyncio.Task] = set()
 
     def _load_system_prompt(self) -> str:
         if self._config.system_prompt_path is None:
@@ -106,14 +112,17 @@ class ClaudeReasoner:
             {"role": "user", "content": request.user_transcript},
         ]
         tools = request.tools or []
-        filler_fired_this_turn = False
-        max_iterations = 5   # Safety cap; also on backlog to make configurable.
+        max_iterations = 5   # See backlog: wire to config.tools.max_iterations.
 
         try:
             for _iteration in range(max_iterations):
                 if self._aborted:
                     return
                 buffer = ""
+                # Filler fires PER ITERATION (not per turn) so multi-round
+                # tool plans announce each round instead of playing dead air.
+                filler_fired_this_iteration = False
+
                 async with self._client.messages.stream(
                     model=self._config.model,
                     system=self._base_prompt,
@@ -132,12 +141,12 @@ class ClaudeReasoner:
                             break
                         et = getattr(event, "type", None)
                         if et == "content_block_start" and on_filler_needed \
-                                and not filler_fired_this_turn:
+                                and not filler_fired_this_iteration:
                             block = getattr(event, "content_block", None)
                             if block is not None and getattr(block, "type", None) == "tool_use":
                                 phrase = self._pick_filler(getattr(block, "name", ""))
-                                asyncio.create_task(on_filler_needed(phrase))
-                                filler_fired_this_turn = True
+                                self._spawn_filler_task(on_filler_needed, phrase)
+                                filler_fired_this_iteration = True
                         elif et == "content_block_delta":
                             delta = getattr(event, "delta", None)
                             if delta is not None and getattr(delta, "type", None) == "text_delta":
@@ -146,14 +155,28 @@ class ClaudeReasoner:
                                 for s in sentences:
                                     yield SpokenChunk(text=s, is_final=False)
 
+                    if self._aborted:
+                        # Short-circuit: skip get_final_message (would drain
+                        # the full SSE payload, defeating barge-in latency)
+                        # and don't execute any tool_use for this iteration.
+                        return
+
                     # Flush trailing text (e.g. "Sure.") from this iteration.
-                    if buffer and not self._aborted:
+                    if buffer:
                         yield SpokenChunk(text=buffer, is_final=False)
 
                     final_msg = await stream.get_final_message()
 
-                # Not tool_use → we're done.
-                if getattr(final_msg, "stop_reason", None) != "tool_use":
+                # Not tool_use → we're done. Mark the last flushed chunk as
+                # final on end_turn so downstream barge-in gating (M5) knows
+                # the turn's speech has been fully queued.
+                stop_reason = getattr(final_msg, "stop_reason", None)
+                if stop_reason != "tool_use":
+                    if stop_reason not in ("end_turn", None):
+                        log.warning("unusual_stop_reason", reason=stop_reason)
+                    # Yield an empty terminal marker so is_final=True is
+                    # observable to downstream consumers.
+                    yield SpokenChunk(text="", is_final=True)
                     return
 
                 # Tools requested: execute all tool_use blocks in parallel,
@@ -166,28 +189,45 @@ class ClaudeReasoner:
                     b for b in final_msg.content
                     if getattr(b, "type", None) == "tool_use"
                 ]
-                results = await asyncio.gather(*[
-                    on_tool_call(ToolCall(id=b.id, name=b.name, input=b.input))
-                    for b in tool_uses
-                ])
 
-                # Append assistant's tool-use message + user's tool_result message.
+                # Append the assistant message FIRST so if gather raises the
+                # history still has a matching tool_use record. Anthropic
+                # requires strict tool_use↔tool_result pairing for follow-up
+                # turns; a stranded tool_use poisons the next request.
+                # exclude_none avoids Optional fields (e.g. ToolUseBlock.caller,
+                # TextBlock.citations, ThinkingBlock signatures) being sent as
+                # null, which some Anthropic API versions reject.
                 messages.append({
                     "role": "assistant",
-                    "content": [b.model_dump() for b in final_msg.content],
+                    "content": [b.model_dump(exclude_none=True) for b in final_msg.content],
                 })
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
+
+                # return_exceptions=True so one failing tool doesn't cancel
+                # its siblings; we synthesize is_error tool_results for the
+                # failed slots so Claude sees the failure and can recover.
+                raw_results = await asyncio.gather(
+                    *[on_tool_call(ToolCall(id=b.id, name=b.name, input=b.input))
+                      for b in tool_uses],
+                    return_exceptions=True,
+                )
+                results = []
+                for b, r in zip(tool_uses, raw_results, strict=True):
+                    if isinstance(r, BaseException):
+                        log.exception("tool_call_raised", tool_name=b.name, error=str(r))
+                        results.append({
+                            "type": "tool_result",
+                            "tool_use_id": b.id,
+                            "content": f"Tool error: {r!s}",
+                            "is_error": True,
+                        })
+                    else:
+                        results.append({
                             "type": "tool_result",
                             "tool_use_id": r.tool_use_id,
                             "content": r.content,
                             "is_error": r.is_error,
-                        }
-                        for r in results
-                    ],
-                })
+                        })
+                messages.append({"role": "user", "content": results})
                 # Loop back for next iteration — Claude sees the tool results
                 # and either responds with text (end_turn) or calls more tools.
 
@@ -197,32 +237,54 @@ class ClaudeReasoner:
         finally:
             self._current_stream = None
 
+    def _spawn_filler_task(self, on_filler_needed, phrase: str) -> None:
+        """Fire the filler-speech task with a strong reference so Python's
+        3.11+ weak-ref semantics don't GC it mid-flight (same hazard the
+        openwakeword stage explicitly guards against). Exceptions are logged
+        via done_callback so a TTS failure during filler doesn't vanish."""
+        task = asyncio.create_task(on_filler_needed(phrase))
+        self._pending_filler_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._pending_filler_tasks.discard(t)
+            if not t.cancelled():
+                exc = t.exception()
+                if exc is not None:
+                    log.exception("filler_task_failed", exc_info=exc)
+        task.add_done_callback(_done)
+
     def _pick_filler(self, tool_name: str) -> str:
-        """Load filler phrases from config/prompts/filler_phrases.yaml on first
-        use, rotate through them so we never repeat back-to-back per tool."""
-        if self._filler_phrases is None:
-            self._load_filler_phrases()
+        """Rotate through filler phrases so we never repeat back-to-back
+        per tool. Phrases loaded eagerly at __init__."""
         options = self._filler_phrases.get(tool_name) or self._filler_phrases.get("default")
         if not options:
             return "One moment."
-        # Rotate: pick anything != last picked for this tool.
+        # Rotate: prefer anything != last picked; fall back to full list if
+        # filtering leaves nothing (happens if all options equal last, e.g.
+        # a misconfigured YAML with duplicate entries — prevents IndexError
+        # from random.choice([])).
         last = self._last_filler.get(tool_name)
-        pool = [p for p in options if p != last] if len(options) > 1 else options
-        import random
+        pool = [p for p in options if p != last] or options
         choice = random.choice(pool)
         self._last_filler[tool_name] = choice
         return choice
 
     def _load_filler_phrases(self) -> None:
-        """Load config/prompts/filler_phrases.yaml. Tolerates missing file
-        with a minimal built-in fallback."""
-        import yaml
-        path = Path("config/prompts/filler_phrases.yaml")
-        if not path.exists():
-            self._filler_phrases = {"default": ["One moment.", "Hold on."]}
-            return
+        """Load config/prompts/filler_phrases.yaml relative to the repo root
+        (via this file's __file__ location, not CWD, so `carl` works from any
+        directory). Tolerates missing/malformed file with a minimal fallback."""
+        # Repo root: carl/stages/reasoner/claude.py → parent × 3 = repo root
+        repo_root = Path(__file__).resolve().parents[3]
+        path = repo_root / "config" / "prompts" / "filler_phrases.yaml"
         try:
-            self._filler_phrases = yaml.safe_load(path.read_text()) or {}
+            loaded = yaml.safe_load(path.read_text())
+            if not isinstance(loaded, dict):
+                raise ValueError(f"filler_phrases.yaml must be a dict, got {type(loaded).__name__}")
+            self._filler_phrases = loaded
+            log.info("filler_phrases_loaded", path=str(path), tool_count=len(loaded))
+        except FileNotFoundError:
+            log.info("filler_phrases_missing_using_default", path=str(path))
+            self._filler_phrases = {"default": ["One moment.", "Hold on."]}
         except Exception:  # noqa: BLE001
             log.exception("filler_phrases_load_failed", path=str(path))
             self._filler_phrases = {"default": ["One moment."]}

@@ -23,7 +23,8 @@ from carl.tools import ToolResult, tool
 
 log = structlog.get_logger()
 
-_RESULT_BUDGET_BYTES = 2000   # cap the tool_result content going back to Claude
+_RESULT_BUDGET_BYTES = 2000    # cap the tool_result content going back to Claude
+_ANSWER_TRUNCATE_TO = 1200     # cap the pre-synthesized answer if it alone exceeds budget
 
 
 @tool(
@@ -50,9 +51,21 @@ _RESULT_BUDGET_BYTES = 2000   # cap the tool_result content going back to Claude
     safety_tier="readonly",
 )
 class WebSearchTool:
-    def __init__(self, config: TavilyConfig | None = None):
-        # Lazy import — tavily-python pulls httpx transport.
-        from tavily import AsyncTavilyClient
+    def __init__(self, tavily_config: TavilyConfig | None = None):
+        # Config comes via the NativeToolProvider's `injected` dict — main.py
+        # populates {"tavily_config": config.search.tavily}. Fallback to
+        # defaults if nothing was injected.
+        self._config = tavily_config or TavilyConfig()
+        # Client is constructed lazily on first execute() so `carl tools list`
+        # (a read-only inspection command) works even when TAVILY_API_KEY is
+        # unset — critical for a fresh clone where the dev hasn't signed up
+        # for Tavily yet.
+        self._client = None
+
+    def _ensure_client(self) -> None:
+        if self._client is not None:
+            return
+        from tavily import AsyncTavilyClient  # lazy — httpx transport cost
 
         api_key = os.environ.get("TAVILY_API_KEY")
         if not api_key:
@@ -61,12 +74,26 @@ class WebSearchTool:
                 "see .env.example."
             )
         self._client = AsyncTavilyClient(api_key=api_key)
-        self._config = config or TavilyConfig()
+
+    async def close(self) -> None:
+        """Called on Pipeline shutdown to release the httpx pool. No-op if
+        the client was never lazy-constructed."""
+        if self._client is None:
+            return
+        aclose = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
+        if aclose is not None:
+            try:
+                result = aclose()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:  # noqa: BLE001
+                log.exception("tavily_close_failed")
 
     async def execute(self, query: str) -> ToolResult:
         log.info("web_search_query", query=query[:80],
                  search_depth=self._config.search_depth)
         try:
+            self._ensure_client()
             r = await self._client.search(
                 query=query,
                 search_depth=self._config.search_depth,
@@ -75,15 +102,18 @@ class WebSearchTool:
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("web_search_failed")
+            # Plain-text error so Claude can speak it naturally instead of
+            # trying to render JSON braces in a spoken reply.
             return ToolResult(
-                content=json.dumps({"error": f"search failed: {exc!s}"}),
+                content=f"Web search failed: {exc!s}",
                 is_error=True,
             )
 
         # Compact payload for Claude: pre-synthesized answer + top hits with
         # snippets. Drop raw_content unless we ever need it.
+        answer = r.get("answer")
         payload: dict[str, Any] = {
-            "answer": r.get("answer"),
+            "answer": answer,
             "results": [
                 {
                     "title": x.get("title", ""),
@@ -95,7 +125,12 @@ class WebSearchTool:
         }
         content = json.dumps(payload, ensure_ascii=False)
 
-        # If we blew the budget, trim results until under it.
+        # If we blew the budget: first truncate the answer (which can be
+        # multi-KB on advanced search_depth), then trim results one at a time.
+        oversize = len(content.encode("utf-8")) > _RESULT_BUDGET_BYTES
+        if oversize and answer and len(answer) > _ANSWER_TRUNCATE_TO:
+            payload["answer"] = answer[:_ANSWER_TRUNCATE_TO].rstrip() + "…"
+            content = json.dumps(payload, ensure_ascii=False)
         while len(content.encode("utf-8")) > _RESULT_BUDGET_BYTES and payload["results"]:
             payload["results"].pop()
             content = json.dumps(payload, ensure_ascii=False)

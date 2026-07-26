@@ -83,6 +83,21 @@ class NativeToolProvider:
             kwargs = self._resolve_deps(cls)
             self._instances[name] = cls(**kwargs)
 
+    async def close(self) -> None:
+        """Called on pipeline shutdown. Drains any tool instance that owns
+        network / IO resources (has an async .close() method — e.g. Tavily's
+        AsyncTavilyClient httpx pool)."""
+        for name, instance in self._instances.items():
+            close = getattr(instance, "close", None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:  # noqa: BLE001
+                log.exception("tool_close_failed", tool=name)
+
     @staticmethod
     def discover(package_name: str) -> None:
         """Import every module under `package_name` so decorators run."""
