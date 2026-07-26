@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import threading
 import time
 
 import structlog
@@ -71,6 +72,7 @@ class DeepgramSession:
         self._bytes_sent = 0
         self._send_count = 0
         self._keepalive_task: asyncio.Task | None = None
+        self._listen_thread: threading.Thread | None = None
 
     async def _open(self) -> None:
         # Lazy import so this file is safe to import without deepgram-sdk present.
@@ -95,7 +97,17 @@ class DeepgramSession:
         self._conn.on(EventType.MESSAGE, self._on_message)
         self._conn.on(EventType.ERROR, self._on_error)
         self._conn.on(EventType.CLOSE, self._on_close)
-        self._conn.start_listening()
+        # start_listening() is a BLOCKING receive loop — it runs the
+        # WebSocket read pump until close. Must be on its own thread; if
+        # called from the asyncio loop it blocks the whole app for the
+        # duration of the session (which then races Deepgram's 10s
+        # no-audio timeout and closes with 1011).
+        self._listen_thread = threading.Thread(
+            target=self._conn.start_listening,
+            name="deepgram_listen",
+            daemon=True,
+        )
+        self._listen_thread.start()
         self._opened_at = time.monotonic()
         log.info("deepgram_stream_opened", model=self._config.model)
         # Keep-alive every 5 s so we don't hit Deepgram's 10 s
