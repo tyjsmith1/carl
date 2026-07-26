@@ -59,6 +59,9 @@ class OpenWakeWord:
 
     async def start(self, on_wake: OnWakeCallback) -> None:
         self._on_wake = on_wake
+        # Human-visible line so the user knows Carl is actually listening.
+        phrase = self._configured_name.replace("_", " ")
+        print(f'IDLE. listening for "{phrase}"... (Ctrl-C to quit)', flush=True)
 
     async def stop(self) -> None:
         # Nothing to clean up — no native handles, no threads owned by us.
