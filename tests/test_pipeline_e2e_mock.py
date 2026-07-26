@@ -46,6 +46,7 @@ def _build_pipeline(config: Config, db_path: Path) -> Pipeline:
 @pytest.mark.asyncio
 async def test_mock_pipeline_full_turn(default_config: Config, tmp_db: Path) -> None:
     default_config.conversation.follow_up_ms = 100  # short for fast tests
+    default_config.conversation.followup_guard_ms = 0  # skip TTS-echo guard in tests
 
     pipeline = _build_pipeline(default_config, tmp_db)
 
@@ -119,6 +120,7 @@ async def test_mock_pipeline_full_turn(default_config: Config, tmp_db: Path) -> 
 @pytest.mark.asyncio
 async def test_turn_row_persisted(default_config: Config, tmp_db: Path) -> None:
     default_config.conversation.follow_up_ms = 50
+    default_config.conversation.followup_guard_ms = 0
     pipeline = _build_pipeline(default_config, tmp_db)
     pipeline.event_log.start()
     await pipeline.tool_registry.initialize()

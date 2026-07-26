@@ -119,6 +119,13 @@ class AudioRouter:
         for frame in list(self._ring):
             consumer(frame)
 
+    async def drain_ring(self) -> None:
+        """Discard buffered input frames. Used by the follow-up window before
+        activating VAD so the tail of Carl's own TTS (captured via the mic
+        during the guard delay) isn't the first thing VAD sees and mistakes
+        for user speech."""
+        self._ring.clear()
+
     # ─── Output side ──────────────────────────────────────────────
 
     async def push_output(self, pcm: bytes) -> None:

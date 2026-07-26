@@ -168,7 +168,17 @@ class ConversationConfig(BaseModel):
     llm_timeout_seconds: int = 20
     tts_timeout_seconds: int = 10
     history_turns: int = 10
-    follow_up_ms: int = 3000
+    # Follow-up window: after Carl finishes speaking, keep the mic open and
+    # listen for the user to keep talking without needing another wake word.
+    # Enables natural back-and-forth ("what's the weather" → answer → "and
+    # tomorrow?" all in one exchange). Bumped from 3s to 7s to give the user
+    # time to think between Carl's answer and their next thought.
+    follow_up_ms: int = 7000
+    # Guard delay at the start of the follow-up window before VAD activates.
+    # Prevents Carl's own TTS tail-echo (still bleeding out of desktop
+    # speakers on setups without acoustic echo cancellation) from
+    # false-triggering VAD as if it were the user speaking.
+    followup_guard_ms: int = 400
     no_speech_timeout_ms: int = 5000
 
 

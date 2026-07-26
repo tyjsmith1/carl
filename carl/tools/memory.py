@@ -232,12 +232,16 @@ class ListMemoriesTool:
 @tool(
     name="forget",
     description=(
-        "Tombstone a memory the user has asked to remove. IMPORTANT: because "
-        "this is not easily reversible, ALWAYS confirm verbally with the "
-        "user before calling this tool. Say something like 'You want me to "
-        "forget that Ruby is a golden retriever — say yes to confirm.' Then "
-        "END YOUR TURN. Only call `forget` after the user's next affirmative "
-        "reply. If they say no or change the subject, do not call it."
+        "Tombstone a memory the user has asked to remove. Confirmation "
+        "protocol: (1) On the FIRST request, do not call this tool. Instead "
+        "say a short confirmation prompt ('You want me to forget X — say yes "
+        "to confirm.') and end your turn. (2) On the very next user turn, if "
+        "their message contains any affirmative ('yes', 'yeah', 'yep', "
+        "'confirm', 'do it', 'go ahead', 'that's right', 'correct') — even "
+        "if they also re-state the request or add extra words — call this "
+        "tool immediately. Do NOT ask a second time. Only skip the call if "
+        "the user clearly changed their mind ('no', 'wait', 'cancel') or "
+        "switched topics."
     ),
     input_schema={
         "type": "object",

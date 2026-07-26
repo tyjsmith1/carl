@@ -35,7 +35,7 @@ from carl.pipeline.router import AudioRouter
 from carl.stages import Stages
 from carl.stages.reasoner import Message, ReasonerTurn, ToolCall, ToolResult
 from carl.stages.stt import Transcript
-from carl.stages.vad import SpeechEnd
+from carl.stages.vad import SpeechEnd, SpeechStart
 from carl.storage.db import connect
 from carl.tools import ToolContext, ToolRegistry
 from carl.tools.base import ToolResult as ProviderToolResult
@@ -186,16 +186,58 @@ class Pipeline:
             log.info("wake_ignored_not_idle", state=self.state.value)
             return
 
-        # Start conversation if none active; always start a new turn.
+        # Start conversation if none active. The turn-loop below runs one
+        # turn per iteration. First turn is triggered by the wake word;
+        # subsequent turns fire when the follow-up window detects speech
+        # (natural back-and-forth without re-waking — see conversation-state.md).
         if self._conversation_id is None:
             await self._start_conversation()
+
+        first_turn = True
+        while True:
+            if not await self._run_one_turn(event if first_turn else None,
+                                            first_turn=first_turn):
+                # Early exit (empty transcript, shutdown, error): break the loop
+                # without waiting for follow-up — user won't have said anything
+                # meaningful this iteration.
+                break
+
+            # Follow-up window: after TTS finishes, keep the mic open and
+            # listen for VAD to fire speech_start. If the user starts talking,
+            # loop into another turn. Otherwise timeout → IDLE.
+            self._transition(State.RECORDING, trigger=TTS_COMPLETE)
+            detected = await self._wait_for_followup_speech()
+            if not detected:
+                break
+            first_turn = False
+            log.info("followup_turn_starting")
+
+        self._transition(State.IDLE, trigger=FOLLOWUP_EXPIRED)
+
+    async def _run_one_turn(
+        self,
+        event: PipelineEvent | None,
+        *,
+        first_turn: bool,
+    ) -> bool:
+        """Run one full RECORDING → THINKING → SPEAKING turn. Returns True on
+        success (safe to check for follow-up), False on early exit (empty
+        transcript, etc — should end the conversation loop)."""
         await self._start_turn()
 
-        self._transition(State.RECORDING, trigger=WAKE_DETECTED)
-        self.event_log.log(
-            "wake_word", "wake_detected", event.payload,
-            conversation_id=self._conversation_id, turn_id=self._current_turn.id,
-        )
+        if first_turn:
+            self._transition(State.RECORDING, trigger=WAKE_DETECTED)
+            self.event_log.log(
+                "wake_word", "wake_detected", event.payload if event else {},
+                conversation_id=self._conversation_id, turn_id=self._current_turn.id,
+            )
+        else:
+            # State is already RECORDING (follow-up window handed off mid-state);
+            # no FSM transition needed. Log a distinct event for the audit trail.
+            self.event_log.log(
+                "conversation", "followup_speech_detected", {},
+                conversation_id=self._conversation_id, turn_id=self._current_turn.id,
+            )
 
         # Open STT session. Mock returns canned transcript on close();
         # real STT streams audio via the router until VAD fires speech_end.
@@ -229,8 +271,10 @@ class Pipeline:
             log.info("empty_transcript_skipping_reasoner",
                      conv=self._conversation_id, turn=self._current_turn.id)
             await self._end_turn()
+            # Empty transcript: end the conversation loop entirely. Waiting
+            # for follow-up would just re-trigger on ambient noise.
             self._transition(State.IDLE, trigger="empty_transcript")
-            return
+            return False
 
         # Retrieve memories (empty in Milestone 1 — no memories saved yet).
         memories = await self.memory_store.retrieve(query=transcript_text)
@@ -325,14 +369,9 @@ class Pipeline:
         # Persist the turn record now that it's complete.
         await self._end_turn()
 
-        # Transition SPEAKING → RECORDING (follow-up window) → IDLE
-        self._transition(State.RECORDING, trigger=TTS_COMPLETE)
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                self._shutdown.wait(),
-                timeout=self.config.conversation.follow_up_ms / 1000,
-            )
-        self._transition(State.IDLE, trigger=FOLLOWUP_EXPIRED)
+        # Return to the outer loop, which handles the SPEAKING → RECORDING
+        # transition + follow-up-speech listening + IDLE fallthrough.
+        return True
 
     async def _on_transcript(self, transcript: Transcript) -> None:
         """Called by STT session on every partial/final. Milestone 1: log only."""
@@ -426,6 +465,74 @@ class Pipeline:
                     await task
 
         return await stt_session.close()
+
+    async def _wait_for_followup_speech(self) -> bool:
+        """During the follow-up window, activate VAD on the mic and wait for
+        SpeechStart. Returns True if the user began speaking within
+        follow_up_ms (loop into a new turn), False on timeout (end conversation).
+
+        Uses a small guard delay first so that the trailing echo of Carl's
+        own TTS (still bleeding out of the speakers on desktop setups without
+        AEC) doesn't false-trigger VAD as if it were the user. See BACKLOG
+        for proper acoustic echo cancellation."""
+        # Guard: let TTS tail-echo dissipate before we start listening. On a
+        # laptop with built-in mic+speakers, the last ~200-400ms of speech
+        # audio is still audible when this function starts.
+        await asyncio.sleep(self.config.conversation.followup_guard_ms / 1000)
+
+        # Also drain any audio that piled up in the router's ring buffer
+        # during the guard delay — otherwise the very first VAD frame is
+        # the tail of Carl's own speech.
+        with contextlib.suppress(Exception):
+            await self.router.drain_ring()
+
+        # Reset VAD state so leftover state from the just-finished utterance
+        # (which fired speech_end and is thus in the non-speech state) doesn't
+        # bias detection. Silero VAD holds a small hidden state.
+        reset = getattr(self.stages.vad, "reset", None)
+        if reset is not None:
+            reset()
+
+        speech_start = asyncio.Event()
+        vad_frames: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        async def _vad_drain() -> None:
+            while True:
+                frame = await vad_frames.get()
+                if frame is None:
+                    return
+                evt = await self.stages.vad.process(frame)
+                if isinstance(evt, SpeechStart):
+                    speech_start.set()
+                    return
+
+        vad_task = asyncio.create_task(_vad_drain(), name="followup_vad_drain")
+
+        def vad_consumer(pcm: bytes) -> None:
+            vad_frames.put_nowait(pcm)
+
+        # Use a distinct consumer name so registration doesn't clash with
+        # the "vad" consumer that _record_utterance_real re-registers next turn.
+        self.router.register("vad_followup", vad_consumer)
+        self.router.activate("vad_followup")
+
+        try:
+            try:
+                await asyncio.wait_for(
+                    speech_start.wait(),
+                    timeout=self.config.conversation.follow_up_ms / 1000,
+                )
+                return True
+            except TimeoutError:
+                return False
+        finally:
+            self.router.deactivate("vad_followup")
+            with contextlib.suppress(asyncio.QueueFull):
+                vad_frames.put_nowait(None)
+            if not vad_task.done():
+                vad_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await vad_task
 
     def _make_on_tool_call(self):
         """Build the reasoner's on_tool_call callback bound to this turn's context.
