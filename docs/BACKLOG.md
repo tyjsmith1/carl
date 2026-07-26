@@ -71,6 +71,10 @@ Cross-linked from the specific milestone plan. When starting a milestone, read i
 - **Short-ID collision handling** — 6-char ULID suffix collides at ~1 in a million; currently `find_by_short_id` returns None on multi-match. Consider raising `AmbiguousShortIDError` if this ever bites. (`carl/memory/sqlite_store.py:203`)
 - **Wire `memory.retrieval_strategy` to real embed_topk implementation** — Milestone-1.5 wired config-passing; the actual `embed_topk` code path still needs building.
 
+### Milestone 4 follow-ups (post-completion, 2026-07-26)
+
+- [med] **Sensitive-tier voice confirmation flow at the registry level** — M4 uses prompt-discipline via the `forget` tool description (LLM instructed to confirm verbally + wait for next user turn). Works but relies on the LLM following instructions perfectly. Proper design: ToolRegistry intercepts sensitive-tier tools before executing, returns `awaiting_confirmation` ToolResult, orchestrator stores pending call per conversation_id, next user turn is inspected for confirmation words + rule-based match ("yes"/"do it"/"confirm") with Haiku classifier fallback, executes the pending call if confirmed. Full spec in `docs/specs/tools.md`. (`carl/tools/memory.py` ForgetTool; `carl/pipeline/orchestrator.py`)
+
 ### Milestone 5 (Barge-in)
 
 - **`_tts_cancel` producer** — Milestone-1 threads the Event through but never sets it. Barge-in's VAD `speech_start` handler is what sets it. (`carl/pipeline/orchestrator.py:196`)

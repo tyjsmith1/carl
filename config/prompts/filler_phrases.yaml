@@ -20,6 +20,18 @@ save_memory:
   - Noted.
   - Got it.
 
+correct_memory:
+  - Updating.
+  - Got the correction.
+
+list_memories:
+  - Let me check what I have.
+  - Pulling that up.
+
+forget:
+  - Removing that.
+  - Done.
+
 default:
   - Hold on.
   - One sec.

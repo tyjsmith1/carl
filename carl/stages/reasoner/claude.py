@@ -92,6 +92,52 @@ class ClaudeReasoner:
             return "You are Carl, a voice assistant."
         return path.read_text().strip()
 
+    def _build_system_prompt(self, memories: list) -> str:
+        """Assemble the per-turn system prompt: base personality + retrieved
+        memories block + reminder about silent recall. See docs/specs/memory.md
+        for the format spec."""
+        if not memories:
+            return self._base_prompt
+        # Group by type. Duck-typed access so we don't need to import Memory
+        # (would be a circular import via reasoner.base).
+        grouped: dict[str, list] = {
+            "corrections": [],
+            "preferences": [],
+            "routines": [],
+            "facts": [],
+        }
+        type_to_section = {
+            "correction": "corrections",
+            "preference": "preferences",
+            "routine": "routines",
+            "fact": "facts",
+        }
+        for m in memories:
+            section = type_to_section.get(getattr(m, "type", ""))
+            if section is not None:
+                grouped[section].append(m)
+
+        lines = ["", "<memories>"]
+        for section, items in grouped.items():
+            if not items:
+                continue
+            lines.append(f"<{section}>")
+            for m in items:
+                # Short-id (last 6 chars of ULID) is what the LLM references
+                # when calling correct_memory / forget — see memory tools.
+                sid = getattr(m, "short_id", getattr(m, "id", "")[-6:])
+                lines.append(f"- [{sid}] {getattr(m, 'content', '')}")
+            lines.append(f"</{section}>")
+        lines.append("</memories>")
+        lines.append("")
+        lines.append(
+            "Use these memories naturally when relevant. Do NOT narrate that "
+            "you remembered them — no 'I remember...' phrases. Silent recall. "
+            "If the user corrects something a memory says, call correct_memory "
+            "with the short_id shown in brackets above."
+        )
+        return self._base_prompt + "\n" + "\n".join(lines)
+
     async def turn(
         self,
         request: ReasonerTurn,
@@ -115,6 +161,9 @@ class ClaudeReasoner:
         # Cap from request (populated by orchestrator from config.tools.max_iterations);
         # fall back to 5 if the caller didn't specify.
         max_iterations = request.max_tool_iterations if request.max_tool_iterations else 5
+        # Build the per-turn system prompt with retrieved memories injected.
+        # Cached across iterations of the same turn — memories don't change mid-turn.
+        system_prompt = self._build_system_prompt(request.memories)
 
         try:
             for _iteration in range(max_iterations):
@@ -127,7 +176,7 @@ class ClaudeReasoner:
 
                 async with self._client.messages.stream(
                     model=self._config.model,
-                    system=self._base_prompt,
+                    system=system_prompt,
                     messages=messages,
                     max_tokens=self._config.max_tokens,
                     temperature=self._config.temperature,
