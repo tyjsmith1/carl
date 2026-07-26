@@ -262,7 +262,15 @@ class Pipeline:
 
         try:
             if self._audio_mode:
-                transcript_text = await self._record_utterance_real(stt_session)
+                # On a follow-up turn, VAD is already in the 'triggered' state
+                # (SpeechStart fired inside _wait_for_followup_speech). Resetting
+                # it here would clear that flag; if the utterance is short
+                # ('yes.') and completes during the STT-open handoff, VAD ends
+                # up staring at silence with triggered=False and never fires
+                # SpeechEnd → 30s hang until utterance_max_seconds.
+                transcript_text = await self._record_utterance_real(
+                    stt_session, skip_vad_reset=not first_turn,
+                )
             else:
                 # Mock path: send a dummy frame to trigger the fake partial,
                 # then close to get the canned final transcript.
@@ -286,9 +294,13 @@ class Pipeline:
         if not transcript_text.strip():
             log.info("empty_transcript_skipping_reasoner",
                      conv=self._conversation_id, turn=self._current_turn.id)
-            await self._end_turn()
-            # Empty transcript: end the conversation loop entirely. Waiting
-            # for follow-up would just re-trigger on ambient noise.
+            # Delete the just-started turn row instead of persisting an
+            # orphan with NULL user_transcript/assistant_text. Ambient-noise
+            # VAD false-triggers during follow-up would otherwise pile up
+            # empty rows in the turns table and skew analytics.
+            await self._discard_turn()
+            # End the conversation loop entirely — waiting for follow-up
+            # would just re-trigger on more ambient noise.
             self._transition(State.IDLE, trigger="empty_transcript")
             return False
 
@@ -398,14 +410,22 @@ class Pipeline:
                 turn_id=self._current_turn.id if self._current_turn else None,
             )
 
-    async def _record_utterance_real(self, stt_session) -> str:
+    async def _record_utterance_real(
+        self, stt_session, *, skip_vad_reset: bool = False,
+    ) -> str:
         """Real-audio RECORDING path: pump router audio into STT and VAD in
         parallel until VAD fires speech_end (or utterance timeout). Returns
-        the final transcript."""
+        the final transcript.
+
+        skip_vad_reset: pass True when entering from a follow-up window that
+        just fired SpeechStart — the VAD is already correctly in the
+        triggered state, and resetting would strand it in non-triggered
+        state facing potentially-silent audio."""
         # Reset VAD state between utterances — Silero is stateful.
-        reset = getattr(self.stages.vad, "reset", None)
-        if reset is not None:
-            reset()
+        if not skip_vad_reset:
+            reset = getattr(self.stages.vad, "reset", None)
+            if reset is not None:
+                reset()
 
         speech_end = asyncio.Event()
 
@@ -556,8 +576,17 @@ class Pipeline:
             for t in (vad_task, speech_task, shutdown_task):
                 if not t.done():
                     t.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                # Suppress CancelledError (expected — we just cancelled the
+                # task) but LOG any real exception before swallowing.
+                # Bare suppress(Exception) would hide a Silero inference
+                # crash and leave us wondering why follow-up silently died.
+                try:
                     await t
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    log.exception("followup_task_failed",
+                                  task_name=t.get_name())
 
     def _make_on_tool_call(self):
         """Build the reasoner's on_tool_call callback bound to this turn's context.
@@ -664,6 +693,21 @@ class Pipeline:
             "UPDATE conversations SET turn_count = turn_count + 1 WHERE id = ?",
             (self._conversation_id,),
         )
+        self._current_turn = None
+
+    async def _discard_turn(self) -> None:
+        """DELETE the current turn row instead of persisting it. Used when
+        the utterance was empty (ambient-noise VAD false-trigger) and we
+        don't want an orphan row polluting analytics or the turn_index."""
+        if self._current_turn is None:
+            return
+        await self._db_execute(
+            "DELETE FROM turns WHERE id = ?", (self._current_turn.id,),
+        )
+        # Roll back the turn_index bump from _start_turn — otherwise the
+        # next real turn gets a non-sequential index.
+        assert self._conversation_id is not None
+        self._turn_index_by_conv[self._conversation_id] -= 1
         self._current_turn = None
 
     def _log_session_start(self) -> None:

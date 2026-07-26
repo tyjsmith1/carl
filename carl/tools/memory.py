@@ -136,10 +136,6 @@ class SaveMemoryTool:
                     "assistant's perspective."
                 ),
             },
-            "reason": {
-                "type": "string",
-                "description": "Brief description of what was wrong.",
-            },
         },
         "required": ["old_memory_short_id", "corrected_content"],
     },
@@ -155,7 +151,6 @@ class CorrectMemoryTool:
         context: ToolContext,
         old_memory_short_id: str,
         corrected_content: str,
-        reason: str = "correction",
     ) -> ToolResult:
         old = await self._store.find_by_short_id(
             old_memory_short_id, user_id=context.user_id,

@@ -95,12 +95,15 @@ class SQLiteMemoryStore:
             rows = await cursor.fetchall()
             memories = [_row_to_memory(r) for r in rows]
 
-            if memories:
-                task = asyncio.create_task(self._touch([m.id for m in memories]))
+            # Slice FIRST — only touch the memories that actually reached the
+            # LLM, so use_count / last_used_at reflect real usage (needed for
+            # M6 recency ranking) instead of every row we happened to fetch.
+            result = memories if k is None else memories[:k]
+            if result:
+                task = asyncio.create_task(self._touch([m.id for m in result]))
                 self._pending_touches.add(task)
                 task.add_done_callback(self._pending_touches.discard)
-
-            return memories if k is None else memories[:k]
+            return result
         finally:
             await conn.close()
 
@@ -214,9 +217,13 @@ class SQLiteMemoryStore:
         Returns None if not found, or if multiple match (ambiguous)."""
         conn = await aconnect(self._db_path)
         try:
+            # UPPER on both sides — ULIDs are stored uppercase, but Claude
+            # sometimes lowercases the short_id when echoing it back in a
+            # tool call, and a case-sensitive equality would silently return
+            # 'not found' for a memory that actually exists.
             cursor = await conn.execute(
                 "SELECT * FROM memories WHERE user_id = ? AND tombstoned = 0 "
-                "AND superseded_by IS NULL AND substr(id, -6) = ?",
+                "AND superseded_by IS NULL AND UPPER(substr(id, -6)) = UPPER(?)",
                 (user_id, short_id),
             )
             rows = await cursor.fetchall()

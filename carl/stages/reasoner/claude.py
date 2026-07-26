@@ -124,9 +124,21 @@ class ClaudeReasoner:
             lines.append(f"<{section}>")
             for m in items:
                 # Short-id (last 6 chars of ULID) is what the LLM references
-                # when calling correct_memory / forget — see memory tools.
-                sid = getattr(m, "short_id", getattr(m, "id", "")[-6:])
-                lines.append(f"- [{sid}] {getattr(m, 'content', '')}")
+                # when calling correct_memory / forget. Explicit if-check
+                # instead of a nested getattr with a slice default — that
+                # would eagerly evaluate `None[-6:]` and TypeError-abort
+                # the turn for any Memory with id=None.
+                sid = getattr(m, "short_id", None)
+                if not sid:
+                    mid = getattr(m, "id", None) or ""
+                    sid = mid[-6:] if mid else "unknown"
+                # Substitute unicode lookalikes for angle brackets so a
+                # memory whose content contains '</memories>' or a fake
+                # <system> directive can't close our tags or inject
+                # instructions into future turns. Claude reads ‹ / › fine.
+                content = str(getattr(m, "content", "")).replace(
+                    "<", "‹").replace(">", "›")
+                lines.append(f"- [{sid}] {content}")
             lines.append(f"</{section}>")
         lines.append("</memories>")
         lines.append("")
