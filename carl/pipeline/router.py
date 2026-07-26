@@ -46,7 +46,12 @@ class AudioRouter:
     IN_SAMPLE_RATE = 16000
     OUT_SAMPLE_RATE = 24000
     FRAME_SIZE = 512                       # samples per input frame = 32 ms @ 16 kHz
-    OUT_BLOCK_SIZE = 1024                  # samples per output callback (arbitrary)
+    # OpenAI TTS streams chunks in bursts over HTTPS; the audio callback pulls
+    # continuously at OUT_SAMPLE_RATE. If the audio callback is too greedy
+    # (small block size), the queue underruns between HTTP chunks and we hear
+    # gaps. 4096 samples = ~170 ms per callback gives the network enough
+    # headroom to refill between callbacks.
+    OUT_BLOCK_SIZE = 4096                  # samples per output callback (~170 ms at 24 kHz)
     IN_QUEUE_MAX = 100                     # ~3.2 s of buffered audio before drops
     OUT_QUEUE_MAX = 200                    # bytes-buffer count, generous
     RING_BUFFER_FRAMES = 16                # ~512 ms at 32 ms/frame
