@@ -94,7 +94,10 @@ def run(ctx: click.Context) -> None:
     stages = build_stages(config)
 
     # Discover native tools and build the registry.
-    NativeToolProvider.discover("carl.tools.examples")
+    # Walk carl.tools (not just carl.tools.examples) so real tools like
+    # web_search.py, memory tools (M4), etc. are picked up alongside the
+    # noop example tool.
+    NativeToolProvider.discover("carl.tools")
     native_provider = NativeToolProvider(
         injected={"memory_store": memory_store}
     )
@@ -171,7 +174,10 @@ def tools_list(ctx: click.Context) -> None:
     apply_migrations(db_path)
     memory_store = SQLiteMemoryStore(db_path, config=config.memory)
 
-    NativeToolProvider.discover("carl.tools.examples")
+    # Walk carl.tools (not just carl.tools.examples) so real tools like
+    # web_search.py, memory tools (M4), etc. are picked up alongside the
+    # noop example tool.
+    NativeToolProvider.discover("carl.tools")
     provider = NativeToolProvider(injected={"memory_store": memory_store})
     registry = ToolRegistry(providers=[provider])
     asyncio.run(registry.initialize())

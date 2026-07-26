@@ -9,7 +9,7 @@ providers:
   stt: deepgram                # M2: real (Nova-3 streaming)
   reasoner: claude_sonnet      # M2: real (Sonnet 4.6 streaming)
   tts: openai                  # M2: real (gpt-4o-mini-tts, nova voice)
-  search: mock                 # M3
+  search: tavily               # M3: real. Requires TAVILY_API_KEY.
 
 wake_word:
   openwakeword:

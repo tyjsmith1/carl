@@ -234,6 +234,20 @@ class Pipeline:
             conversation_id=self._conversation_id, turn_id=self._current_turn.id,
         )
 
+        # Gather tool definitions in Anthropic's tools format so the reasoner
+        # can offer them to Claude. ToolDefinition's name/description/input_schema
+        # already match the Anthropic tool shape; safety_tier and provider_name
+        # are our internal metadata and get filtered out.
+        tools_for_llm = [
+            {
+                "name": d.name,
+                "description": d.description,
+                "input_schema": d.input_schema,
+            }
+            for d in self.tool_registry.definitions()
+            if d.name != "noop"   # smoke-test tool; don't expose to Claude
+        ]
+
         # Run reasoner + stream chunks to TTS.
         request = ReasonerTurn(
             user_transcript=transcript_text,
@@ -241,6 +255,7 @@ class Pipeline:
             turn_id=self._current_turn.id,
             history=list(self._history),
             memories=list(memories),
+            tools=tools_for_llm,
         )
         assistant_text_parts: list[str] = []
         turn_start = time.time()

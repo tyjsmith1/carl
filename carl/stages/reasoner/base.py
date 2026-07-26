@@ -21,6 +21,10 @@ class ReasonerTurn:
     turn_id: str
     history: list[Message] = field(default_factory=list)
     memories: list = field(default_factory=list)  # list[Memory] but avoiding circular import
+    # Tool definitions available for the LLM to call this turn, in the
+    # Anthropic tools format: {"name", "description", "input_schema"}.
+    # Empty list = no tools available (Milestone-2 default; M3 populates it).
+    tools: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
