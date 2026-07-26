@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Secrets and local config
+.env
+config/carl.local.yaml
+
+# Runtime state (Carl's DB, logs, wake-word models)
+carl.db
+carl.db-*
+*.log
+consolidation-proposals-*.json
+
+# Wake-word models are per-machine + expire on free tier; don't commit
+config/wake_words/*.ppn
+
+# Claude Code local settings (per-user WebFetch allowlists etc.)
+.claude/settings.local.json

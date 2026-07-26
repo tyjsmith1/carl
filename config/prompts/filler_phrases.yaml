@@ -1,0 +1,26 @@
+# Rotating filler phrases spoken during tool execution.
+# See docs/specs/tools.md and docs/specs/reasoner.md.
+# Never same phrase twice in a row (enforced in code).
+
+web_search:
+  - Let me check.
+  - One sec.
+  - Looking that up.
+  - Give me a moment.
+
+get_weather:
+  - Checking the weather.
+  - One moment.
+
+set_timer:
+  - Got it.
+  - Setting that up.
+
+save_memory:
+  - Noted.
+  - Got it.
+
+default:
+  - Hold on.
+  - One sec.
+  - Working on it.

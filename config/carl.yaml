@@ -1,0 +1,103 @@
+version: 1
+
+# Milestone 1: everything mock. Flip individual entries to real providers
+# as their implementations land (Milestone 2+). Config for the real providers
+# is kept in this file even when unused so switching is a one-line change.
+providers:
+  wake_word: mock
+  vad: mock
+  stt: mock
+  reasoner: mock
+  tts: mock
+  search: mock
+
+wake_word:
+  porcupine:
+    keyword_path: config/wake_words/hey_carl_mac.ppn
+    sensitivity: 0.5
+
+vad:
+  silero:
+    threshold: 0.5
+    min_silence_ms_utterance_end: 700
+    min_silence_ms_bargein: 150
+    speech_pad_ms: 100
+    sample_rate: 16000
+
+stt:
+  deepgram:
+    model: nova-3
+    language: en-US
+    interim_results: true
+    smart_format: true
+    endpointing_ms: 300
+    utterance_end_ms: 1000
+
+reasoner:
+  claude_sonnet:
+    model: claude-sonnet-4-6
+    max_tokens: 1024
+    system_prompt_path: config/prompts/carl_base.md
+    streaming: true
+    tool_choice: auto
+    temperature: 0.7
+
+tts:
+  openai:
+    model: gpt-4o-mini-tts
+    voice: nova
+    response_format: pcm
+    sample_rate: 24000
+
+search:
+  tavily:
+    search_depth: basic
+    max_results: 5
+    include_answer: true
+
+audio:
+  input_device: default
+  output_device: default
+  input_sample_rate: 16000
+  output_sample_rate: 24000
+  channels: 1
+
+storage:
+  sqlite_path: ~/.carl/carl.db
+  event_log_retention_days: 30
+
+memory:
+  retrieval_strategy: dump_all
+  top_k: 8
+  embedding_model: text-embedding-3-small
+  auto_inject: true
+  narrate_recall: false
+
+tools:
+  require_confirmation:
+    - forget
+    - delete_all_memories
+  filler_speech: true
+  parallel_execution: true
+  max_iterations: 5
+  tool_timeout_seconds: 15
+
+conversation:
+  bargein_enabled: true
+  utterance_max_seconds: 30
+  llm_timeout_seconds: 20
+  tts_timeout_seconds: 10
+  history_turns: 10
+  follow_up_ms: 3000
+  no_speech_timeout_ms: 5000
+
+consolidation:
+  enabled: true
+  cron: "0 3 * * *"
+  dry_run: false
+  model: claude-opus-4-7
+  max_tokens: 4096
+
+logging:
+  level: INFO
+  event_log_stdout: false
