@@ -10,7 +10,7 @@ OnWakeCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 class WakeWord(Protocol):
     """Runs continuously in the background. Fires `on_wake` when the wake
-    trigger is detected. Audio-driven implementations (Porcupine) receive
+    trigger is detected. Audio-driven implementations (OpenWakeWord) receive
     frames via `feed()`; trigger-driven implementations (mock stdin,
     physical button) ignore `feed()` and use their own event source.
     """

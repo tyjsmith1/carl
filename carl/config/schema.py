@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # ─── Provider selection ──────────────────────────────────────────────────────
 
-WakeWordProvider = Literal["mock", "porcupine", "openwakeword"]
+WakeWordProvider = Literal["mock", "openwakeword"]
 VADProvider = Literal["mock", "silero", "webrtc"]
 STTProvider = Literal["mock", "deepgram", "whisper_api", "whisper_local"]
 ReasonerProvider = Literal["mock", "claude_sonnet", "claude_opus", "claude_haiku"]
@@ -31,15 +31,20 @@ class ProvidersConfig(BaseModel):
 # ─── Per-provider configs ────────────────────────────────────────────────────
 
 
-class PorcupineConfig(BaseModel):
+class OpenWakeWordConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    keyword_path: str
-    sensitivity: float = 0.5
+    # For MVP: use a pre-trained model name from openwakeword's model list
+    # (e.g. "hey_jarvis", "alexa", "hey_mycroft"). To use a custom-trained
+    # model, set model_path to the .tflite/.onnx file path instead.
+    model_name: str = "hey_jarvis"
+    model_path: str | None = None            # overrides model_name if set
+    threshold: float = 0.5                    # 0.0-1.0; higher = fewer false accepts
+    inference_framework: Literal["tflite", "onnx"] = "tflite"
 
 
 class WakeWordConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    porcupine: PorcupineConfig | None = None
+    openwakeword: OpenWakeWordConfig | None = None
 
 
 class SileroConfig(BaseModel):

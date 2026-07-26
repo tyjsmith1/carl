@@ -11,9 +11,8 @@ Replace every mock stage from Milestone 1 with the real integration. After this 
   - `ANTHROPIC_API_KEY`
   - `DEEPGRAM_API_KEY`
   - `OPENAI_API_KEY`
-  - `PICOVOICE_ACCESS_KEY`
-- A `.ppn` wake-word file for "Hey Carl" generated from Picovoice Console at `config/wake_words/hey_carl_{platform}.ppn`.
 - Working USB mic and speaker connected. Verify with `python -m sounddevice` (should list both).
+- **Note**: original plan used Picovoice Porcupine as the wake-word engine. Swapped to OpenWakeWord on 2026-07-26 because Picovoice's signup now requires a corporate email. OpenWakeWord ships a pre-trained `hey_jarvis` model; custom "hey_carl" training via Colab notebook is a backlog item.
 
 ## Non-goals
 
@@ -28,7 +27,7 @@ Config flips from mocks to real impls:
 
 ```yaml
 providers:
-  wake_word: porcupine     # was: mock
+  wake_word: openwakeword  # was: mock
   vad:       silero        # was: mock
   stt:       deepgram      # was: mock
   reasoner:  claude_sonnet # was: mock
@@ -42,32 +41,62 @@ providers:
 
 Each is a class implementing the Protocol from `carl/stages/{stage}/base.py`. All ~50-150 lines each.
 
-#### `carl/stages/wake_word/porcupine.py`
+#### `carl/stages/wake_word/openwakeword.py`
 
 ```python
-import pvporcupine, struct, numpy as np
+import numpy as np
+import openwakeword
+from openwakeword.model import Model
 from carl.stages.wake_word.base import WakeWord
 
-class PorcupineWakeWord(WakeWord):
+class OpenWakeWord(WakeWord):
     def __init__(self, config):
-        self._pv = pvporcupine.create(
-            access_key=os.environ["PICOVOICE_ACCESS_KEY"],
-            keyword_paths=[config.keyword_path],
-            sensitivities=[config.sensitivity],
+        # First run downloads pretrained model files (~few MB).
+        openwakeword.utils.download_models()
+        self._model_key = config.model_name
+        model_arg = config.model_path or config.model_name
+        self._model = Model(
+            wakeword_models=[model_arg],
+            inference_framework=config.inference_framework,
         )
-        self.sample_rate = self._pv.sample_rate       # 16000
-        self.frame_length = self._pv.frame_length     # 512
+        self._threshold = config.threshold
+        self.sample_rate = 16000
+        self.frame_length = 1280   # 80 ms at 16 kHz — see spec for router chunk math
+        self._buffer = bytearray()
+        self._on_wake_cb = None
 
-    async def process(self, pcm_i16: bytes) -> bool:
-        # pcm_i16 is exactly frame_length*2 bytes
-        pcm_shorts = struct.unpack_from(f"{self.frame_length}h", pcm_i16)
-        return self._pv.process(pcm_shorts) >= 0
+    async def start(self, on_wake):
+        self._on_wake_cb = on_wake
 
-    async def close(self):
-        self._pv.delete()
+    def wants_audio(self) -> bool:
+        return True
+
+    def feed(self, pcm_i16: bytes) -> None:
+        # Router hands us its native 512-sample frames; buffer to 1280-sample
+        # (80 ms) predictions.
+        self._buffer.extend(pcm_i16)
+        while len(self._buffer) >= self.frame_length * 2:
+            chunk = bytes(self._buffer[: self.frame_length * 2])
+            del self._buffer[: self.frame_length * 2]
+            arr = np.frombuffer(chunk, dtype=np.int16)
+            scores = self._model.predict(arr)
+            if scores.get(self._model_key, 0.0) > self._threshold:
+                # Bridge to async: schedule the coroutine on the pipeline loop
+                # (main.py holds a ref to the loop; use loop.call_soon_threadsafe).
+                if self._on_wake_cb is not None:
+                    self._loop.call_soon_threadsafe(
+                        asyncio.create_task,
+                        self._on_wake_cb({"keyword": self._model_key,
+                                           "score": scores[self._model_key]}),
+                    )
+
+    async def stop(self):
+        return   # nothing to clean up
 ```
 
-**Threading**: called from the audio router's callback thread. Porcupine is single-threaded per instance; fine.
+**Threading**: called from the audio router's callback thread. OpenWakeWord is thread-safe per instance; a single instance handled per router callback thread is fine. The wake event bridges back to the asyncio loop via `loop.call_soon_threadsafe`.
+
+**Model files**: `openwakeword.utils.download_models()` on first run pulls the pretrained models (a few MB) to a cache dir. Subsequent runs use the cache. Custom-trained `.tflite` / `.onnx` models can be loaded by passing `model_path` instead of `model_name`.
 
 #### `carl/stages/vad/silero.py`
 
@@ -384,7 +413,7 @@ Total: ~1.5s from stopping speech to Carl starting to speak. Meets the "feels re
 
 - [ ] All 5 real stage impls exist, unit tests pass with SDK mocks.
 - [ ] Router's threading contract is documented at the top of `router.py` (audio thread vs asyncio loop).
-- [ ] Full pipeline runs. Saying "hey Carl, when was Chicago founded" into a mic produces a spoken answer.
+- [ ] Full pipeline runs. Saying **"hey Jarvis, when was Chicago founded"** (pretrained MVP phrase; custom "hey Carl" is a backlog item) into a mic produces a spoken answer.
 - [ ] Event log for one conversation contains: `wake_detected`, `stt_final`, `llm_request`, `llm_response`, `tts_first_byte`, `tts_complete`, and the correct state_transitions.
 - [ ] `sqlite3 ~/.carl/carl.db "SELECT latency_ms_to_first_audio FROM turns"` shows values under 2000ms for most turns on a decent internet connection.
 - [ ] Recovery: unplug the mic mid-conversation; Carl transitions to ERROR, announces via TTS, returns to IDLE when mic reconnects.
@@ -399,7 +428,7 @@ $ carl
 carl 0.1.0 — providers: porcupine, silero, deepgram, claude_sonnet, openai
 Warming up VAD... ok.
 Loading wake-word model (hey_carl_mac.ppn)... ok.
-Listening for "hey Carl".
+Listening for "hey jarvis".
 ```
 
 You say: *"hey Carl, when was Chicago founded"*.
@@ -423,14 +452,16 @@ Terminal:
 [TTS] complete (dur 4200ms, 84 chars)
 [FSM] SPEAKING → RECORDING (follow-up 3s)
 [FSM] RECORDING → IDLE
-Listening for "hey Carl".
+Listening for "hey jarvis".
 ```
 
 ## Traps / lessons
 
 - **Deepgram SDK version churn**: the SDK jumped through v3 → v4 → v7 in about a year and the v2 `client.listen.v2.connect()` context-manager surface above is *current* as of v7.6.0 (2026-07-22). Older tutorials and StackOverflow answers show `client.listen.asynclive.v("1")` / `LiveOptions` / `LiveTranscriptionEvents` — that pattern is dead. Pin `deepgram-sdk == 7.6.*` in `pyproject.toml` so tutorials don't drift you back.
 - **Sounddevice sample-rate mismatch**: if your default audio device doesn't support 16 kHz input, sounddevice silently resamples (badly). Explicitly set `device=` in config to a device that supports it, or resample in the router. Test by playing back what the router captures.
-- **`.ppn` file expiration**: on Picovoice free tier, custom wake-word files expire in 30 days [VERIFY current policy]. Automate regeneration or upgrade.
+- **OpenWakeWord first-run model download**: first import triggers `download_models()` which pulls ~few MB from GitHub. Do this once at install time (e.g. in `pip install`'s post-install or a `carl setup` command) so first user turn isn't delayed.
+- **OpenWakeWord frame size**: 80 ms (1280 samples at 16 kHz), 2.5× Porcupine's 32 ms. The audio router buffers frames — verify the buffering math when landing the real router.
+- **Wake-model license**: pretrained OpenWakeWord models are CC BY-NC-SA 4.0 — non-commercial only. Fine for personal use; if Carl ever gets commercial application, train custom models (Apache-2.0 base is fine, only the pretrained weights are restricted).
 - **First-token latency on Claude cold cache**: first turn of a session is ~200ms slower than subsequent (no cache hit). Warm the cache at startup with a throwaway call? Optional; measure first.
 - **sounddevice + `abort()`**: after `.abort()`, the OutputStream is in a stopped state. Call `.start()` again before the next `push_output`. If you skip this and TTS goes silent forever, this is why.
 - **STT partials arriving after final**: race condition where a partial event fires just after final. Filter: only accept partials until `is_final=True`, then close.

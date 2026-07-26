@@ -64,6 +64,7 @@ Cross-linked from the specific milestone plan. When starting a milestone, read i
 
 ### Post-Milestone-6 / v2+
 
+- **Custom `hey_carl` wake-word model** — MVP uses OpenWakeWord's pre-trained `hey_jarvis`. To get the actual "Carl" name, train a custom model via OpenWakeWord's Colab notebook: (a) generate ~1000 synthetic "hey Carl" samples via Piper TTS, (b) fine-tune the base model in Colab (~1 hour of compute), (c) download the `.tflite` file to `config/wake_words/hey_carl.tflite`, (d) set `wake_word.openwakeword.model_path` in `carl.yaml`. See github.com/dscripka/openWakeWord for the current training notebook. Doable in an afternoon whenever you feel like it. (`docs/DECISIONS.md` ADR-016)
 - **MCP tool provider** — `ToolProvider` interface seam exists; `MCPToolProvider` implementation deferred until we want to wire in Home Assistant or similar. (`docs/specs/tools.md`)
 - **Multi-user via voice ID** — schema has `user_id` column throughout; voice-classification stage between wake-word and STT is v3-ish.
 - **Behavioral learning beyond consolidation** — pattern-based routine promotion, preference decay, cross-conversation summarization.

@@ -21,7 +21,7 @@ The whole system on one page. Deep detail per subsystem lives in `specs/`; this 
          ▼             ▼              ▼             ▼              ▼      ▼
     ┌─────────┐  ┌──────────┐   ┌──────────┐  ┌──────────┐  ┌─────────┐  ┌──────────┐
     │ Audio   │  │ Wake Word│   │  VAD     │  │  STT     │  │Reasoner │  │  TTS     │
-    │ Router  │  │(Porcupine)   │(Silero x2)  │(Deepgram)│  │(Claude  │  │(OpenAI)  │
+    │ Router  │  │(OpenWakeWord)│(Silero x2)  │(Deepgram)│  │(Claude  │  │(OpenAI)  │
     │ sd I/O  │  │          │   │          │  │          │  │ Sonnet) │  │          │
     └────┬────┘  └──────────┘   └──────────┘  └──────────┘  └────┬────┘  └─────┬────┘
          │                                                        │             │

@@ -12,9 +12,13 @@ providers:
   search: mock
 
 wake_word:
-  porcupine:
-    keyword_path: config/wake_words/hey_carl_mac.ppn
-    sensitivity: 0.5
+  openwakeword:
+    # For MVP, use a pre-trained model. Options: hey_jarvis, alexa,
+    # hey_mycroft, hey_rhasspy. Custom "hey_carl" model can be trained
+    # via OpenWakeWord's Colab notebook — see docs/BACKLOG.md.
+    model_name: hey_jarvis
+    threshold: 0.5
+    inference_framework: tflite
 
 vad:
   silero:

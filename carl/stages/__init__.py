@@ -36,8 +36,7 @@ def _not_yet(stage: str, name: str) -> Callable[[Any], Any]:
 
 _WAKE_WORD_IMPLS: dict[str, Callable[[Any], WakeWord]] = {
     "mock": StdinTriggeredWakeWord,
-    "porcupine": _not_yet("wake_word", "porcupine"),        # Milestone 2
-    "openwakeword": _not_yet("wake_word", "openwakeword"),
+    "openwakeword": _not_yet("wake_word", "openwakeword"),   # Milestone 2 — swapped in for Porcupine
 }
 
 _VAD_IMPLS: dict[str, Callable[[Any], VAD]] = {

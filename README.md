@@ -73,7 +73,7 @@ tests/                             ← pytest suite (created in milestone 1)
 | Layer | Choice |
 |---|---|
 | Runtime | Python 3.11+ / asyncio |
-| Wake word | Porcupine (custom "hey Carl" model) |
+| Wake word | OpenWakeWord (`hey_jarvis` for MVP; custom `hey_carl` on backlog) |
 | Voice activity | Silero VAD |
 | Speech-to-text | Deepgram Nova-3 (streaming) |
 | Reasoning | Claude Sonnet 4.6 |

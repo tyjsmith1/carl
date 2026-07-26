@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from carl.config import Config, deep_merge
-from carl.config.schema import DeepgramConfig, PorcupineConfig
+from carl.config.schema import DeepgramConfig, OpenWakeWordConfig
 
 
 def test_defaults_all_mock() -> None:
@@ -58,9 +58,14 @@ def test_extra_keys_rejected() -> None:
         Config.model_validate({"nonsense_top_level_key": 1})
 
 
-def test_porcupine_config_requires_keyword_path() -> None:
-    with pytest.raises(Exception):
-        PorcupineConfig()  # type: ignore[call-arg]
+def test_openwakeword_config_defaults() -> None:
+    """OpenWakeWordConfig has all-defaults construction (unlike Porcupine which
+    required a keyword_path); the pre-trained hey_jarvis phrase is the MVP default."""
+    cfg = OpenWakeWordConfig()
+    assert cfg.model_name == "hey_jarvis"
+    assert cfg.model_path is None
+    assert 0.0 <= cfg.threshold <= 1.0
+    assert cfg.inference_framework == "tflite"
 
 
 def test_deepgram_config_defaults() -> None:

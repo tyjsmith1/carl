@@ -198,3 +198,24 @@ Decisions that were locked in during the initial design brainstorm (2026-07-25).
 **Why**: User explicitly wants to iterate on personality easily. Prompt engineering is the highest-leverage tuning knob; making it 0-friction to change matters. Also enables `config/prompts/carl_sassy.md` alt-personality experiments.
 
 **Consequences**: File-watcher adds a dependency (`watchfiles`) and a small startup task. Prompt errors mid-run keep the last-known-good until next successful reload. Only prompts hot-reload; other config still requires restart.
+
+---
+
+## ADR-016 — Wake word: OpenWakeWord instead of Porcupine, `hey_jarvis` for MVP
+
+**Decision** (2026-07-26): Swap the wake-word engine from **Picovoice Porcupine** to **OpenWakeWord**. Use the pre-trained `hey_jarvis` model for MVP; train a custom `hey_carl` model later via OpenWakeWord's Colab notebook.
+
+**Alternatives considered**:
+- Persist with Porcupine (blocked — see below).
+- Skip wake word entirely, use always-on VAD or push-to-talk keyboard shortcut.
+- Snowboy / community forks (dead upstream).
+
+**Why**: Picovoice's Console signup now requires a corporate email domain — the free-tier personal-use path is effectively gated. OpenWakeWord (`pip install openwakeword`) is open source (Apache-2.0 code), needs no signup, has no expiration, and ships with pre-trained models including `hey_jarvis`. Custom "hey Carl" training is a documented Colab notebook workflow — deferred to backlog rather than blocking MVP.
+
+**Consequences**:
+- Wake phrase is `hey Jarvis` for MVP. Not the "Carl" name, but functionally identical.
+- Pre-trained OpenWakeWord models are CC BY-NC-SA 4.0 (non-commercial only). Fine for personal use; a custom-trained model would sidestep this if Carl ever becomes commercial.
+- Wake-detect latency floor is ~82 ms (one 80 ms frame + inference) vs Porcupine's ~35 ms. Imperceptible for MVP.
+- Audio router now handles 1280-sample (80 ms) wake predictions rather than Porcupine's 512-sample (32 ms) frames — the router buffers accordingly.
+- Custom `hey_carl` training tracked in `docs/BACKLOG.md`.
+- ADR-002's original stack pick for wake word is superseded by this one.

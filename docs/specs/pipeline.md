@@ -125,14 +125,19 @@ class WakeWord(Protocol):
     async def close(self) -> None: ...
 ```
 
-**Porcupine implementation** (chosen impl):
-- Package: `pvporcupine` `[VERIFY]`
-- Init: `pvporcupine.create(access_key=..., keyword_paths=["hey_carl_mac.ppn"], sensitivities=[cfg.sensitivity])`
-- Per frame: `porcupine.process(pcm_i16_as_shorts)` returns `-1` (no) or keyword index (yes).
-- Cleanup: `porcupine.delete()` — MUST be called on shutdown to release native handle.
-- Custom "hey Carl" model: trained via Picovoice Console (console.picovoice.ai), download `.ppn` for the target platform (macOS/Linux/Raspberry Pi). Free-tier files historically expire after 30 days and are tied to the AccessKey used to generate them `[VERIFY current policy]`.
+**OpenWakeWord implementation** (chosen impl — swapped in for Porcupine, which now gates signup behind corporate email):
 
-Threading: Porcupine is single-threaded per instance. Our router callback runs on `sounddevice`'s callback thread; we hand frames to Porcupine on that same thread. Safe.
+- Package: `openwakeword` on PyPI (`pip install openwakeword`). Apache-2.0 code; pre-trained models under CC BY-NC-SA 4.0 (fine for personal non-commercial use).
+- Init: `Model(wakeword_models=["hey_jarvis"], inference_framework="tflite")`. First run downloads the model files (~few MB) via `openwakeword.utils.download_models()`.
+- Audio contract: **16 kHz mono PCM int16**, 80 ms frames (1280 samples per prediction). Note: this is 2.5× Porcupine's 512-sample frame — the router chunk math changes, and we buffer 2-3 router frames per wake prediction.
+- Per prediction: `scores = model.predict(pcm_int16_bytes)` returns `{model_name: score}` in `[0.0, 1.0]`. Wake fires when `scores[model_name] > threshold`.
+- Cleanup: no explicit `.close()` needed — pure Python + tflite/onnx runtime.
+
+**Wake phrase choice for MVP: `hey_jarvis`** (pre-trained, ships with the package). Custom "hey_carl" model can be trained via OpenWakeWord's Colab notebook (~1 hour of synthetic-sample generation via Piper TTS + fine-tuning). Tracked in `docs/BACKLOG.md` under "Post-Milestone-6 / v2+" and Milestone 2 callouts.
+
+**Threading:** thread-safe per instance. Router callback thread can call `predict` directly. Model inference is ~1-2 ms per frame on a modern laptop CPU — well within audio-callback budget.
+
+**Latency:** wake-detect floor is 80 ms (one frame) + inference (~2 ms) ≈ 82 ms. Vs. Porcupine's ~32 ms. In practice: imperceptible for MVP; if it ever feels laggy, drop `threshold` to reduce false rejects at the cost of more false accepts.
 
 ### VAD
 

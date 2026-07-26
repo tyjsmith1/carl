@@ -26,7 +26,7 @@ dependencies = [
     "sounddevice>=0.4",
     "numpy>=1.26",
     "silero-vad>=5.1",
-    "pvporcupine>=3.0",
+    "openwakeword>=0.6",       # Apache-2.0 code + CC-BY-NC-SA models — swapped in for Porcupine (which now gates signup behind corporate email)
     "janus>=1.0",             # thread-safe queue for audio-callback → asyncio bridge
 ]
 
