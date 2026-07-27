@@ -99,7 +99,7 @@ class OpenWakeWord:
             # frequent during barge-in attempts with mic-picked-up-echo. Helps
             # diagnose whether the mic hears the wake phrase during SPEAKING.
             if 0.35 <= score < self._threshold:
-                log.info("wake_near_miss", model=key, score=round(score, 3))
+                log.info("wake_near_miss", model=key, score=round(float(score), 3))
             if score > self._threshold:
                 self._fire_wake(key, float(score))
 

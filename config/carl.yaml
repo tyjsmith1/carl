@@ -13,10 +13,8 @@ providers:
 
 wake_word:
   openwakeword:
-    # For MVP, use a pre-trained model. Options: hey_jarvis, alexa,
-    # hey_mycroft, hey_rhasspy. Custom "hey_carl" model can be trained
-    # via OpenWakeWord's Colab notebook — see docs/BACKLOG.md.
-    model_name: hey_jarvis
+    model_name: hey_carl
+    model_path: config/wake_words/hey_carl.onnx
     threshold: 0.5
     inference_framework: onnx
 
@@ -55,9 +53,10 @@ tts:
     # 1.0 = natural; 1.15–1.25 = brisk; >1.5 starts sounding chipmunky.
     speed: 1.15
   elevenlabs:
-    voice_id: pNInz6obpgDQGcFmaJgB  # Adam — pre-built, free-tier accessible
-    model_id: eleven_flash_v2_5  # low-latency; multilingual_v2 sounds better but adds ~500ms
-    output_format: pcm_24000     # must match router.OUT_SAMPLE_RATE
+    # voice_id: pNInz6obpgDQGcFmaJgB
+    voice_id: nPczCjzI2devNBz1zQrb
+    model_id: eleven_flash_v2_5 # low-latency; multilingual_v2 sounds better but adds ~500ms
+    output_format: pcm_24000 # must match router.OUT_SAMPLE_RATE
     stability: 0.5
     similarity_boost: 0.75
     style: 0.0
