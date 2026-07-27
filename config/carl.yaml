@@ -8,7 +8,7 @@ providers:
   vad: silero # M2: real
   stt: deepgram # M2: real (Nova-3 streaming)
   reasoner: claude_sonnet # M2: real (Sonnet 4.6 streaming)
-  tts: openai # M2: real (gpt-4o-mini-tts, ash voice). elevenlabs impl wired but blocked on account plan (free tier can't API library voices).
+  tts: elevenlabs # M4.1: switched from openai. Adam voice via flash_v2_5.
   search: tavily # M3: real. Requires TAVILY_API_KEY.
 
 wake_word:
@@ -55,7 +55,7 @@ tts:
     # 1.0 = natural; 1.15–1.25 = brisk; >1.5 starts sounding chipmunky.
     speed: 1.15
   elevenlabs:
-    voice_id: gPPH6SLdL8XSX6GNJ40G
+    voice_id: pNInz6obpgDQGcFmaJgB  # Adam — pre-built, free-tier accessible
     model_id: eleven_flash_v2_5  # low-latency; multilingual_v2 sounds better but adds ~500ms
     output_format: pcm_24000     # must match router.OUT_SAMPLE_RATE
     stability: 0.5
