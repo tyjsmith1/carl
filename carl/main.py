@@ -61,7 +61,15 @@ def _setup_logging(level_name: str, log_dir: Path | None = None) -> None:
         # Include the ISO date suffix on rotated files.
         file_handler.suffix = "%Y-%m-%d"
         handlers.append(file_handler)
-    logging.basicConfig(format="%(message)s", level=level, handlers=handlers, force=True)
+    # Don't force=True — that clobbers any pre-existing root handlers,
+    # including pytest's caplog fixture and SDK-installed handlers.
+    # Instead: set the level, then add our handlers explicitly.
+    root = logging.getLogger()
+    root.setLevel(level)
+    formatter = logging.Formatter("%(message)s")
+    for h in handlers:
+        h.setFormatter(formatter)
+        root.addHandler(h)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

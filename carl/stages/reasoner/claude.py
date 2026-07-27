@@ -298,6 +298,12 @@ class ClaudeReasoner:
                       for b in tool_uses],
                     return_exceptions=True,
                 )
+                # Barge-in during tool execution: user said "hey Jarvis" while
+                # tools ran (potentially slow — a Tavily search is 3-4s). Bail
+                # before starting the NEXT stream iteration so we don't spend
+                # another API call on a turn the user already aborted.
+                if self._aborted:
+                    return
                 results = []
                 for b, r in zip(tool_uses, raw_results, strict=True):
                     if isinstance(r, BaseException):
@@ -389,9 +395,20 @@ class ClaudeReasoner:
         return formatted
 
     async def abort(self) -> None:
-        """Cancel any in-flight streaming turn. Sets a flag; the async-for
-        loop above checks it after each chunk."""
+        """Cancel any in-flight streaming turn. Sets a flag the tool-use
+        loop checks between iterations, and cancels any fire-and-forget
+        filler tasks so the aborted turn's 'noted' or 'one moment' doesn't
+        bleed into the next turn's audio queue."""
         self._aborted = True
-        # Note: Anthropic SDK's stream doesn't have an explicit .cancel(),
-        # but exiting the `async with` (which happens when the generator
-        # is aborted/closed) closes the underlying HTTP connection.
+        # Cancel pending fillers — otherwise a filler whose TTS is still
+        # awaiting its first HTTP chunk will wake up AFTER the barge-in
+        # cleanup cleared _tts_cancel and stream audio for the aborted
+        # turn into the new turn's output. Snapshot the set because
+        # done_callback mutates it while we iterate.
+        for task in list(self._pending_filler_tasks):
+            if not task.done():
+                task.cancel()
+        # Anthropic SDK's stream doesn't have an explicit .cancel(); the
+        # orchestrator's contextlib.aclosing wraps the generator so the
+        # `async with self._client.messages.stream(...)` exits cleanly
+        # on abort/break, closing the underlying HTTP connection.

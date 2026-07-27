@@ -171,6 +171,7 @@ class Pipeline:
             output_tokens=s.output_tokens,
             tts_chars_openai=s.tts_chars_openai,
             tts_chars_elevenlabs=s.tts_chars_elevenlabs,
+            tts_chars_other=s.tts_chars_other,
             total_tools_called=s.total_tools_called,
             est_cost_usd=round(s.estimate_cost_usd(), 4),
         )
@@ -186,9 +187,13 @@ class Pipeline:
         WAKE_DETECTED event still goes on the queue — by the time _dispatch
         pops it, the barge-in cleanup will have transitioned to IDLE and
         the wake will be processed as a fresh new turn."""
-        if (self.state == State.SPEAKING
+        # Barge-in during SPEAKING (Carl is talking) OR THINKING (Carl is
+        # generating). THINKING previously dropped wakes silently — user
+        # would say "hey Jarvis" mid-tool-call and nothing happened.
+        if (self.state in (State.SPEAKING, State.THINKING)
                 and self.config.conversation.bargein_enabled):
-            log.info("bargein_wake_detected", score=payload.get("score"))
+            log.info("bargein_wake_detected", score=payload.get("score"),
+                     state=self.state.value)
             self.event_log.log(
                 "conversation", "bargein_detected", payload,
                 conversation_id=self._conversation_id,
@@ -196,6 +201,12 @@ class Pipeline:
             )
             self._bargein.set()
             self._tts_cancel.set()
+            # Also abort the reasoner NOW so any in-flight tool gather /
+            # HTTP stream unwinds — otherwise the reasoner keeps running
+            # until it produces a chunk we can break on, which can be
+            # multi-second during tool_use.
+            with contextlib.suppress(Exception):
+                await self.stages.reasoner.abort()
             # Drop queued output frames RIGHT NOW so Carl stops talking mid-
             # syllable instead of finishing whatever chunk was buffered.
             with contextlib.suppress(Exception):
@@ -409,49 +420,66 @@ class Pipeline:
             conversation_id=self._conversation_id, turn_id=self._current_turn.id,
         )
 
-        async for chunk in self.stages.reasoner.turn(
+        # Local flag so the post-loop check reflects whether barge-in
+        # actually happened DURING streaming — a late wake (arriving between
+        # the last chunk and the check below) would set self._bargein but
+        # shouldn't mis-mark a completed turn as interrupted. contextlib
+        # .aclosing guarantees the reasoner generator's finally clauses
+        # (including the anthropic messages.stream context manager) run
+        # even when we break early, preventing HTTP connection leaks.
+        bargein_triggered = False
+        reasoner_gen = self.stages.reasoner.turn(
             request,
             on_tool_call=self._make_on_tool_call(),
             on_filler_needed=self._on_filler_needed,
-        ):
-            if self._bargein.is_set():
-                break
-            if first_chunk:
-                self._transition(State.SPEAKING, trigger="llm_final_text")
-                first_chunk = False
-                latency_ms = int((time.time() - turn_start) * 1000)
-                self.event_log.log(
-                    "tts", "tts_first_byte",
-                    {"latency_ms": latency_ms},
-                    conversation_id=self._conversation_id, turn_id=self._current_turn.id,
-                )
-                self._current_turn.latency_ms_to_first_audio = latency_ms
-                self._turn_metrics.tts_first_byte_ms = latency_ms
-            assistant_text_parts.append(chunk.text)
-            self._turn_metrics.tts_chars += len(chunk.text)
-            await self.stages.tts.speak(chunk.text, self.router.push_output, self._tts_cancel)
-            if self._bargein.is_set():
-                break
+        )
+        async with contextlib.aclosing(reasoner_gen) as gen:
+            async for chunk in gen:
+                if self._bargein.is_set():
+                    bargein_triggered = True
+                    break
+                if first_chunk:
+                    self._transition(State.SPEAKING, trigger="llm_final_text")
+                    first_chunk = False
+                    latency_ms = int((time.time() - turn_start) * 1000)
+                    self.event_log.log(
+                        "tts", "tts_first_byte",
+                        {"latency_ms": latency_ms},
+                        conversation_id=self._conversation_id, turn_id=self._current_turn.id,
+                    )
+                    self._current_turn.latency_ms_to_first_audio = latency_ms
+                    self._turn_metrics.tts_first_byte_ms = latency_ms
+                assistant_text_parts.append(chunk.text)
+                self._turn_metrics.tts_chars += len(chunk.text)
+                await self.stages.tts.speak(chunk.text, self.router.push_output, self._tts_cancel)
+                if self._bargein.is_set():
+                    bargein_triggered = True
+                    break
 
         # Barge-in cleanup: user interrupted mid-answer with "hey Jarvis".
         # Mark the turn interrupted, persist it, transition to IDLE, and
         # return False so the follow-up loop exits — the WAKE_DETECTED that
         # triggered the barge-in is already on the queue and _dispatch will
         # process it as a fresh new turn on the next iteration.
-        if self._bargein.is_set():
-            self._current_turn.assistant_text = "".join(assistant_text_parts)
+        if bargein_triggered:
+            partial_text = "".join(assistant_text_parts)
+            self._current_turn.assistant_text = partial_text
             self._current_turn.interrupted = True
             self._turn_metrics.interrupted = True
             with contextlib.suppress(Exception):
                 await self.stages.reasoner.abort()
             self.event_log.log(
                 "conversation", "bargein_cleanup",
-                {"chars_spoken": len(self._current_turn.assistant_text or "")},
+                {"chars_spoken": len(partial_text)},
                 conversation_id=self._conversation_id,
                 turn_id=self._current_turn.id,
             )
+            # Capture text into local BEFORE _end_turn — the latter nulls
+            # self._current_turn, so any post-end_turn dereference would
+            # AttributeError. This bug shipped in the M5 barge-in commit and
+            # made every barge-in fall through to error_recovery.
             await self._end_turn()
-            self._emit_turn_complete(transcript_text, self._current_turn.assistant_text)
+            self._emit_turn_complete(transcript_text, partial_text)
             self._transition(State.IDLE, trigger="bargein")
             return False
 
@@ -544,6 +572,11 @@ class Pipeline:
 
         def stt_consumer(pcm: bytes) -> None:
             stt_frames.put_nowait(pcm)
+            # Accumulate STT bytes for cost estimation — Deepgram bills by
+            # audio duration, which we compute from bytes_sent in the
+            # observability module (32000 bytes/sec at 16-bit@16kHz).
+            if self._turn_metrics is not None:
+                self._turn_metrics.stt_audio_bytes += len(pcm)
 
         def vad_consumer(pcm: bytes) -> None:
             vad_frames.put_nowait(pcm)

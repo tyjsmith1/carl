@@ -176,11 +176,17 @@ class AudioRouter:
                 self._out_queue.async_q.get_nowait()
             except asyncio.QueueEmpty:
                 break
-        # Abort OS buffer + restart the stream (abort leaves it stopped)
-        with contextlib.suppress(sd.PortAudioError):
-            self._out_stream.abort()
-        with contextlib.suppress(sd.PortAudioError):
-            self._out_stream.start()
+        # Abort OS buffer + restart the stream (abort leaves it stopped).
+        # These are synchronous PortAudio C calls that can block the OS
+        # thread for 10-100ms (CoreAudio device teardown). Run in a
+        # worker thread so the asyncio loop keeps servicing audio dispatch
+        # and the wake-callback that just called us.
+        def _abort_and_restart() -> None:
+            with contextlib.suppress(sd.PortAudioError):
+                self._out_stream.abort()
+            with contextlib.suppress(sd.PortAudioError):
+                self._out_stream.start()
+        await asyncio.to_thread(_abort_and_restart)
         self._output_bytes_written = 0
 
     def output_bytes_written(self) -> int:

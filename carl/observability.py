@@ -64,31 +64,51 @@ class TurnMetrics:
         c += self.input_tokens / 1_000_000 * PRICING["anthropic_input_per_mtok"]
         c += self.output_tokens / 1_000_000 * PRICING["anthropic_output_per_mtok"]
         c += self.stt_seconds() / 60 * PRICING["deepgram_per_minute"]
-        tts_key = ("elevenlabs_per_mchar" if self.tts_provider == "elevenlabs"
-                   else "openai_tts_per_mchar")
-        c += self.tts_chars / 1_000_000 * PRICING[tts_key]
+        # Only bill known TTS providers. Mock/piper/unknown fall through
+        # to $0 rather than inflating the openai bucket by default.
+        tts_key = {
+            "elevenlabs": "elevenlabs_per_mchar",
+            "openai": "openai_tts_per_mchar",
+        }.get(self.tts_provider)
+        if tts_key:
+            c += self.tts_chars / 1_000_000 * PRICING[tts_key]
         return c
 
 
 @dataclass
 class SessionMetrics:
-    """Rolled up across a session — emitted at shutdown."""
-    started_at: float = field(default_factory=time.monotonic)
+    """Rolled up across a session — emitted at shutdown.
+
+    `started_at` is set on the FIRST turn (not at pipeline construction)
+    so elapsed_seconds reflects the actual conversation duration, not
+    idle-plus-conversation. Process uptime is a different metric.
+    """
+    started_at: float | None = None
     turns_completed: int = 0
     turns_interrupted: int = 0
     turns_empty: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     stt_audio_bytes: int = 0
+    # Bucketed per provider so cost is right when mixed. `other` catches
+    # mock/piper/future providers — DON'T lump them into openai (silently
+    # inflates the openai cost line during dev runs).
     tts_chars_openai: int = 0
     tts_chars_elevenlabs: int = 0
+    tts_chars_other: int = 0
     total_tools_called: int = 0
     latencies_ms: list[int] = field(default_factory=list)  # turn total latency
 
     def elapsed_seconds(self) -> float:
+        if self.started_at is None:
+            return 0.0
         return time.monotonic() - self.started_at
 
     def add_turn(self, m: TurnMetrics) -> None:
+        # First real turn kicks off the session clock so 'elapsed_seconds'
+        # measures conversation duration, not process idle time.
+        if self.started_at is None:
+            self.started_at = m.started_at
         if m.interrupted:
             self.turns_interrupted += 1
         else:
@@ -98,8 +118,10 @@ class SessionMetrics:
         self.stt_audio_bytes += m.stt_audio_bytes
         if m.tts_provider == "elevenlabs":
             self.tts_chars_elevenlabs += m.tts_chars
-        else:
+        elif m.tts_provider == "openai":
             self.tts_chars_openai += m.tts_chars
+        else:
+            self.tts_chars_other += m.tts_chars
         self.total_tools_called += len(m.tools_called)
         self.latencies_ms.append(m.elapsed_ms())
 

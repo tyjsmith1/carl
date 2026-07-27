@@ -93,23 +93,25 @@ class OpenWakeWord:
             # OpenWakeWord returns {model_key: score}; pick the max in case
             # multiple models are loaded (future-proofing).
             key, score = max(scores.items(), key=lambda kv: kv[1])
-            # Heartbeat every ~5 seconds (60 predicts at 80ms each) — proves
-            # whether the mic is actually delivering frames to the model. If
-            # heartbeats keep firing during SPEAKING, input path is fine and
-            # the barge-in problem is model-can't-lock-through-echo (need AEC).
-            # If heartbeats stop, CoreAudio (or similar) is suppressing input
-            # during output — that would be a real router/stream bug to hunt.
+            # Heartbeat every ~5s at DEBUG level — proves the mic is
+            # delivering frames when troubleshooting. Not info level: at
+            # 12/min for the process lifetime it would fill the daily
+            # rotated log with signal-free lines. Turn logging.level=DEBUG
+            # in carl.yaml when investigating barge-in.
             self._predict_count += 1
             self._max_score_in_window = max(self._max_score_in_window, float(score))
             if self._predict_count % 60 == 0:
-                log.info("wake_heartbeat", predicts=self._predict_count,
-                         max_score_window=round(self._max_score_in_window, 3))
+                log.debug("wake_heartbeat", predicts=self._predict_count,
+                          max_score_window=round(self._max_score_in_window, 3))
                 self._max_score_in_window = 0.0
-            # Near-miss: scores in [0.35, threshold). Rare in normal use
-            # (background chatter rarely scores this high), frequent during
-            # barge-in attempts where the user's voice mixes with Carl's.
-            if 0.35 <= score < self._threshold:
-                log.info("wake_near_miss", model=key, score=round(float(score), 3))
+            # Near-miss: scores >= 70% of the configured threshold but below
+            # it. Relative so tuning threshold=0.3 still produces useful
+            # near-misses (fixed [0.35, threshold) was an empty range for
+            # low thresholds, killing the diagnostic silently).
+            if score >= self._threshold * 0.7 and score < self._threshold:
+                log.info("wake_near_miss", model=key,
+                         score=round(float(score), 3),
+                         threshold=self._threshold)
             if score > self._threshold:
                 self._fire_wake(key, float(score))
 
