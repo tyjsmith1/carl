@@ -108,9 +108,32 @@ class OpenAITTSConfig(BaseModel):
     instructions_path: str | None = None
 
 
+class ElevenLabsTTSConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # voice_id is the UUID-ish identifier from ElevenLabs — grab it from
+    # the voice's URL in the ElevenLabs UI or via the voices API.
+    voice_id: str
+    # eleven_flash_v2_5 is the low-latency model (~200-300ms TTFB), best for
+    # conversation. eleven_multilingual_v2 sounds better but adds 500+ms.
+    model_id: str = "eleven_flash_v2_5"
+    # Must match router.OUT_SAMPLE_RATE (24000) so the router can play the
+    # audio without a resampling stage. pcm_24000 = 16-bit LE mono @ 24kHz.
+    output_format: str = "pcm_24000"
+    # Voice-settings knobs. Defaults chosen for natural-sounding conversation:
+    # moderate stability (varied prosody), high similarity to the source
+    # voice, no style exaggeration. Tune per voice.
+    stability: float = Field(default=0.5, ge=0.0, le=1.0)
+    similarity_boost: float = Field(default=0.75, ge=0.0, le=1.0)
+    style: float = Field(default=0.0, ge=0.0, le=1.0)
+    use_speaker_boost: bool = True
+    # ElevenLabs speed range is much tighter than OpenAI's (0.7–1.2).
+    speed: float = Field(default=1.0, ge=0.7, le=1.2)
+
+
 class TTSConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     openai: OpenAITTSConfig | None = None
+    elevenlabs: ElevenLabsTTSConfig | None = None
 
 
 class TavilyConfig(BaseModel):

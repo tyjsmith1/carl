@@ -18,6 +18,9 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.40",
 
+    # TTS
+    "elevenlabs>=2.0",
+
     # STT / search
     "deepgram-sdk>=7.6,<8",   # v2 API surface — client.listen.v2.connect(); older paths dead
     "tavily-python>=0.5",

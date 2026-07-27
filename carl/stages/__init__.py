@@ -60,6 +60,11 @@ def _openai_tts_factory(config: Any) -> TTS:
     return OpenAITTS(config)
 
 
+def _elevenlabs_tts_factory(config: Any) -> TTS:
+    from carl.stages.tts.elevenlabs import ElevenLabsTTS
+    return ElevenLabsTTS(config)
+
+
 _WAKE_WORD_IMPLS: dict[str, Callable[[Any], WakeWord]] = {
     "mock": StdinTriggeredWakeWord,
     "openwakeword": _openwakeword_factory,
@@ -88,7 +93,7 @@ _REASONER_IMPLS: dict[str, Callable[[Any], Reasoner]] = {
 _TTS_IMPLS: dict[str, Callable[[Any], TTS]] = {
     "mock": PrintTTS,
     "openai": _openai_tts_factory,
-    "elevenlabs": _not_yet("tts", "elevenlabs"),
+    "elevenlabs": _elevenlabs_tts_factory,
     "piper": _not_yet("tts", "piper"),
 }
 

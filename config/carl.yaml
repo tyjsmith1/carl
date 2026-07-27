@@ -8,7 +8,7 @@ providers:
   vad: silero # M2: real
   stt: deepgram # M2: real (Nova-3 streaming)
   reasoner: claude_sonnet # M2: real (Sonnet 4.6 streaming)
-  tts: openai # M2: real (gpt-4o-mini-tts, nova voice)
+  tts: openai # M2: real (gpt-4o-mini-tts, ash voice). elevenlabs impl wired but blocked on account plan (free tier can't API library voices).
   search: tavily # M3: real. Requires TAVILY_API_KEY.
 
 wake_word:
@@ -54,6 +54,16 @@ tts:
     sample_rate: 24000
     # 1.0 = natural; 1.15–1.25 = brisk; >1.5 starts sounding chipmunky.
     speed: 1.15
+  elevenlabs:
+    voice_id: gPPH6SLdL8XSX6GNJ40G
+    model_id: eleven_flash_v2_5  # low-latency; multilingual_v2 sounds better but adds ~500ms
+    output_format: pcm_24000     # must match router.OUT_SAMPLE_RATE
+    stability: 0.5
+    similarity_boost: 0.75
+    style: 0.0
+    use_speaker_boost: true
+    # ElevenLabs speed range is 0.7–1.2 (much tighter than OpenAI's 0.25–4.0).
+    speed: 1.0
 
 search:
   tavily:
