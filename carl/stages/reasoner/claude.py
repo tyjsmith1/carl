@@ -79,6 +79,11 @@ class ClaudeReasoner:
         self._load_filler_phrases()
         # Strong refs to fire-and-forget filler tasks (Python 3.11+ GC).
         self._pending_filler_tasks: set[asyncio.Task] = set()
+        # Public — orchestrator reads after each turn() completes and
+        # rolls the numbers into TurnMetrics for the turn_complete line.
+        # Accumulates across tool-use iterations within a single turn;
+        # reset at the top of turn().
+        self.last_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
 
     def _load_system_prompt(self) -> str:
         if self._config.system_prompt_path is None:
@@ -165,6 +170,9 @@ class ClaudeReasoner:
         prevent runaway planning loops.
         """
         self._aborted = False
+        # Reset per-turn usage accumulator. Grows across tool-use iterations
+        # within this turn; orchestrator reads after the generator completes.
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
         messages = [
             *self._format_history(request.history),
             {"role": "user", "content": request.user_transcript},
@@ -229,6 +237,23 @@ class ClaudeReasoner:
                         yield SpokenChunk(text=buffer, is_final=False)
 
                     final_msg = await stream.get_final_message()
+
+                # Log token usage per iteration — orchestrator's
+                # turn_complete line ties this to the turn via turn_id.
+                usage = getattr(final_msg, "usage", None)
+                if usage is not None:
+                    in_tok = getattr(usage, "input_tokens", 0)
+                    out_tok = getattr(usage, "output_tokens", 0)
+                    self.last_usage["input_tokens"] += in_tok
+                    self.last_usage["output_tokens"] += out_tok
+                    log.info(
+                        "llm_usage",
+                        turn_id=request.turn_id,
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        model=self._config.model,
+                        iteration=_iteration,
+                    )
 
                 # Not tool_use → we're done. Mark the last flushed chunk as
                 # final on end_turn so downstream barge-in gating (M5) knows

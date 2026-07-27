@@ -19,6 +19,7 @@ import logging
 import os
 import signal
 import sys
+from pathlib import Path
 
 import certifi
 import click
@@ -45,19 +46,28 @@ VERSION = "0.1.0"
 log = structlog.get_logger()
 
 
-def _setup_logging(level_name: str) -> None:
+def _setup_logging(level_name: str, log_dir: Path | None = None) -> None:
     level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stderr,
-        level=level,
-    )
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    if log_dir is not None:
+        # Daily-rotated file log so past sessions are inspectable without
+        # scrolling terminal buffers. Path is ~/.carl/logs/carl-YYYY-MM-DD.log
+        # by default; rotates at midnight; keeps 30 days.
+        from logging.handlers import TimedRotatingFileHandler
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = TimedRotatingFileHandler(
+            log_dir / "carl.log", when="midnight", backupCount=30, encoding="utf-8",
+        )
+        # Include the ISO date suffix on rotated files.
+        file_handler.suffix = "%Y-%m-%d"
+        handlers.append(file_handler)
+    logging.basicConfig(format="%(message)s", level=level, handlers=handlers, force=True)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
+            structlog.dev.ConsoleRenderer(colors=False),  # colors would render as ANSI escapes in the file
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
     )
@@ -83,12 +93,17 @@ def run(ctx: click.Context) -> None:
     """Run the interactive voice loop."""
     load_dotenv()
     config = Config.load(ctx.obj["config_path"])
-    _setup_logging(config.logging.level)
 
     # Apply migrations before anything else touches the DB.
     db_path = config.storage.resolved_path()
+    # Log dir sits next to the db (typically ~/.carl/logs/). Daily-rotated
+    # file logs so past sessions are reviewable without terminal scrollback.
+    log_dir = db_path.parent / "logs"
+    _setup_logging(config.logging.level, log_dir=log_dir)
+
     schema_version = apply_migrations(db_path)
     log.info("db_ready", path=str(db_path), schema_version=schema_version)
+    log.info("file_logging", log_dir=str(log_dir))
 
     memory_store = SQLiteMemoryStore(db_path, config=config.memory)
     stages = build_stages(config)

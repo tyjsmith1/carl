@@ -22,6 +22,7 @@ import ulid
 from carl.config import Config
 from carl.events import EventLog
 from carl.memory import MemoryStore
+from carl.observability import TurnMetrics
 from carl.pipeline.fsm import (
     FOLLOWUP_EXPIRED,
     SHUTDOWN,
@@ -96,6 +97,12 @@ class Pipeline:
         self._bargein: asyncio.Event = asyncio.Event()
         # Live STT session held so the dispatch error path can close it.
         self._current_stt = None
+        # Per-turn metrics accumulator + session-wide roll-up. Populated in
+        # _run_one_turn and the make_on_tool_call callback, emitted at
+        # turn_complete and session_summary respectively.
+        from carl.observability import SessionMetrics
+        self._session_metrics = SessionMetrics()
+        self._turn_metrics = None  # type: ignore[assignment]
 
         # Set in run() based on whether the wake stage is audio-driven.
         # Determines whether _on_wake_detected pumps real audio through VAD/STT
@@ -151,6 +158,22 @@ class Pipeline:
                 with contextlib.suppress(Exception):
                     await close()
         self._log_session_end()
+        # Emit a compact session summary — total turns, latency stats, cost.
+        s = self._session_metrics
+        log.info(
+            "session_summary",
+            elapsed_seconds=int(s.elapsed_seconds()),
+            turns_completed=s.turns_completed,
+            turns_interrupted=s.turns_interrupted,
+            turns_empty=s.turns_empty,
+            avg_latency_ms=s.avg_latency_ms(),
+            input_tokens=s.input_tokens,
+            output_tokens=s.output_tokens,
+            tts_chars_openai=s.tts_chars_openai,
+            tts_chars_elevenlabs=s.tts_chars_elevenlabs,
+            total_tools_called=s.total_tools_called,
+            est_cost_usd=round(s.estimate_cost_usd(), 4),
+        )
         await self.event_log.stop(drain=True)
 
     # ─── Event queue bridge ──────────────────────────────────────
@@ -319,6 +342,8 @@ class Pipeline:
         if not transcript_text.strip():
             log.info("empty_transcript_skipping_reasoner",
                      conv=self._conversation_id, turn=self._current_turn.id)
+            self._session_metrics.turns_empty += 1
+            self._turn_metrics = None  # don't emit turn_complete for empties
             # Persist the turn row with NULL user_transcript rather than
             # DELETE it — the events table has a FK to turns.id and
             # events were already logged for this turn (wake_detected,
@@ -369,6 +394,14 @@ class Pipeline:
         # Fresh turn — reset the cancel signals from any prior barge-in.
         self._tts_cancel.clear()
         self._bargein.clear()
+        # Start the per-turn metrics accumulator. Populated by callbacks
+        # (on_tool_call, transcript, TTS wraps) and drained into a
+        # turn_complete log at the end of _run_one_turn.
+        self._turn_metrics = TurnMetrics(
+            conversation_id=self._conversation_id or "",
+            turn_id=self._current_turn.id,
+            tts_provider=self.config.providers.tts,
+        )
 
         self.event_log.log(
             "reasoner", "llm_request",
@@ -393,7 +426,9 @@ class Pipeline:
                     conversation_id=self._conversation_id, turn_id=self._current_turn.id,
                 )
                 self._current_turn.latency_ms_to_first_audio = latency_ms
+                self._turn_metrics.tts_first_byte_ms = latency_ms
             assistant_text_parts.append(chunk.text)
+            self._turn_metrics.tts_chars += len(chunk.text)
             await self.stages.tts.speak(chunk.text, self.router.push_output, self._tts_cancel)
             if self._bargein.is_set():
                 break
@@ -406,6 +441,7 @@ class Pipeline:
         if self._bargein.is_set():
             self._current_turn.assistant_text = "".join(assistant_text_parts)
             self._current_turn.interrupted = True
+            self._turn_metrics.interrupted = True
             with contextlib.suppress(Exception):
                 await self.stages.reasoner.abort()
             self.event_log.log(
@@ -415,6 +451,7 @@ class Pipeline:
                 turn_id=self._current_turn.id,
             )
             await self._end_turn()
+            self._emit_turn_complete(transcript_text, self._current_turn.assistant_text)
             self._transition(State.IDLE, trigger="bargein")
             return False
 
@@ -445,6 +482,7 @@ class Pipeline:
 
         # Persist the turn record now that it's complete.
         await self._end_turn()
+        self._emit_turn_complete(transcript_text, assistant_text)
 
         # Return to the outer loop, which handles the SPEAKING → RECORDING
         # transition + follow-up-speech listening + IDLE fallthrough.
@@ -653,6 +691,8 @@ class Pipeline:
         ToolRegistry (tools layer)."""
         async def on_tool_call(call: ToolCall) -> ToolResult:
             start = time.time()
+            if self._turn_metrics is not None:
+                self._turn_metrics.tools_called.append(call.name)
             self.event_log.log(
                 "reasoner", "llm_tool_use",
                 {"tool_name": call.name, "tool_input": call.input, "tool_use_id": call.id},
@@ -753,6 +793,38 @@ class Pipeline:
             (self._conversation_id,),
         )
         self._current_turn = None
+
+    def _emit_turn_complete(self, user_text: str, assistant_text: str) -> None:
+        """Compact one-line turn summary + roll into session totals. Makes
+        'what happened this session' a single grep instead of piecing it
+        together from ~20 individual state-transition/log lines per turn."""
+        if self._turn_metrics is None:
+            return
+        m = self._turn_metrics
+        # Reasoner exposes last_usage after each turn() completes — read
+        # in here rather than piping through the ReasonerTurn interface so
+        # non-Claude reasoners (mock, future local) don't have to implement.
+        reasoner_usage = getattr(self.stages.reasoner, "last_usage", None)
+        if reasoner_usage:
+            m.input_tokens = reasoner_usage.get("input_tokens", 0)
+            m.output_tokens = reasoner_usage.get("output_tokens", 0)
+        log.info(
+            "turn_complete",
+            conv=m.conversation_id[-6:] or "?",
+            turn=m.turn_id[-6:] or "?",
+            user=(user_text or "")[:80],
+            carl=(assistant_text or "")[:80],
+            latency_ms=m.elapsed_ms(),
+            tts_first_byte_ms=m.tts_first_byte_ms,
+            in_tok=m.input_tokens,
+            out_tok=m.output_tokens,
+            tts_chars=m.tts_chars,
+            tools=m.tools_called or None,
+            interrupted=m.interrupted,
+            est_cost_usd=round(m.estimate_cost_usd(), 4),
+        )
+        self._session_metrics.add_turn(m)
+        self._turn_metrics = None
 
     def _log_session_start(self) -> None:
         self.event_log.log("system", "session_start", {
