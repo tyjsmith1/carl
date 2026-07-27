@@ -89,6 +89,11 @@ class Pipeline:
         self._turn_index_by_conv: dict[str, int] = {}
         self._history: list[Message] = []
         self._tts_cancel: asyncio.Event = asyncio.Event()
+        # Barge-in signal — set by the wake-word callback when a wake fires
+        # during SPEAKING. The reasoner streaming loop watches this and
+        # tears down the current turn so the queued WAKE_DETECTED event can
+        # start a fresh turn on the next dispatch iteration.
+        self._bargein: asyncio.Event = asyncio.Event()
         # Live STT session held so the dispatch error path can close it.
         self._current_stt = None
 
@@ -151,7 +156,27 @@ class Pipeline:
     # ─── Event queue bridge ──────────────────────────────────────
 
     async def _on_wake_from_stage(self, payload: dict[str, Any]) -> None:
-        """Callback the wake-word stage invokes. Bridges to the FSM queue."""
+        """Callback the wake-word stage invokes. Bridges to the FSM queue.
+
+        Also detects barge-in: if a wake fires while Carl is SPEAKING and
+        bargein_enabled is on, signal the current turn to tear down. The
+        WAKE_DETECTED event still goes on the queue — by the time _dispatch
+        pops it, the barge-in cleanup will have transitioned to IDLE and
+        the wake will be processed as a fresh new turn."""
+        if (self.state == State.SPEAKING
+                and self.config.conversation.bargein_enabled):
+            log.info("bargein_wake_detected", score=payload.get("score"))
+            self.event_log.log(
+                "conversation", "bargein_detected", payload,
+                conversation_id=self._conversation_id,
+                turn_id=self._current_turn.id if self._current_turn else None,
+            )
+            self._bargein.set()
+            self._tts_cancel.set()
+            # Drop queued output frames RIGHT NOW so Carl stops talking mid-
+            # syllable instead of finishing whatever chunk was buffered.
+            with contextlib.suppress(Exception):
+                await self.router.abort_output()
         await self._event_queue.put(PipelineEvent(type=WAKE_DETECTED, payload=payload))
 
     # ─── Dispatch ────────────────────────────────────────────────
@@ -341,10 +366,9 @@ class Pipeline:
         assistant_text_parts: list[str] = []
         turn_start = time.time()
         first_chunk = True
-        # NOTE: _tts_cancel producer arrives in Milestone 5 (barge-in). Until
-        # then, the Event is threaded but never set — TTS speak() honors it
-        # for interface symmetry with the real barge-in flow.
+        # Fresh turn — reset the cancel signals from any prior barge-in.
         self._tts_cancel.clear()
+        self._bargein.clear()
 
         self.event_log.log(
             "reasoner", "llm_request",
@@ -357,6 +381,8 @@ class Pipeline:
             on_tool_call=self._make_on_tool_call(),
             on_filler_needed=self._on_filler_needed,
         ):
+            if self._bargein.is_set():
+                break
             if first_chunk:
                 self._transition(State.SPEAKING, trigger="llm_final_text")
                 first_chunk = False
@@ -369,6 +395,28 @@ class Pipeline:
                 self._current_turn.latency_ms_to_first_audio = latency_ms
             assistant_text_parts.append(chunk.text)
             await self.stages.tts.speak(chunk.text, self.router.push_output, self._tts_cancel)
+            if self._bargein.is_set():
+                break
+
+        # Barge-in cleanup: user interrupted mid-answer with "hey Jarvis".
+        # Mark the turn interrupted, persist it, transition to IDLE, and
+        # return False so the follow-up loop exits — the WAKE_DETECTED that
+        # triggered the barge-in is already on the queue and _dispatch will
+        # process it as a fresh new turn on the next iteration.
+        if self._bargein.is_set():
+            self._current_turn.assistant_text = "".join(assistant_text_parts)
+            self._current_turn.interrupted = True
+            with contextlib.suppress(Exception):
+                await self.stages.reasoner.abort()
+            self.event_log.log(
+                "conversation", "bargein_cleanup",
+                {"chars_spoken": len(self._current_turn.assistant_text or "")},
+                conversation_id=self._conversation_id,
+                turn_id=self._current_turn.id,
+            )
+            await self._end_turn()
+            self._transition(State.IDLE, trigger="bargein")
+            return False
 
         # Concatenate chunks verbatim — streaming reasoners emit sub-word
         # deltas ("Hel", "lo ", "world."); inserting whitespace or stripping
