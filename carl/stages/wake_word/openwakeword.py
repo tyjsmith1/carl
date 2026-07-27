@@ -88,6 +88,18 @@ class OpenWakeWord:
             # OpenWakeWord returns {model_key: score}; pick the max in case
             # multiple models are loaded (future-proofing).
             key, score = max(scores.items(), key=lambda kv: kv[1])
+            # Near-miss debug log: helps diagnose whether the mic is even
+            # hearing the wake phrase during barge-in attempts. If we see
+            # scores in [0.3, 0.5) while Carl is speaking, the mic is
+            # working but the model can't lock on through Carl's own audio
+            # bleeding into the mic (AEC problem). If we see nothing, the
+            # mic isn't picking up the user's voice at all.
+            # Info-level near-miss: only for scores in [0.35, threshold).
+            # Rare in normal use (background chatter rarely scores this high),
+            # frequent during barge-in attempts with mic-picked-up-echo. Helps
+            # diagnose whether the mic hears the wake phrase during SPEAKING.
+            if 0.35 <= score < self._threshold:
+                log.info("wake_near_miss", model=key, score=round(score, 3))
             if score > self._threshold:
                 self._fire_wake(key, float(score))
 
