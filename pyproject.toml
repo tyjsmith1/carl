@@ -3,6 +3,7 @@ name = "carl"
 version = "0.1.0"
 description = "Personal voice assistant with real memory and behavioral learning"
 requires-python = ">=3.11"
+license = { text = "MIT" }
 dependencies = [
     # Core
     "pydantic>=2.5",

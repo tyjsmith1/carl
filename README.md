@@ -65,7 +65,7 @@ tests/                             ← pytest suite (created in milestone 1)
 3. Read the milestone plan for what you're building (or fixing).
 4. Then read the code.
 
-**If you're the user (Tyler):**
+**If you're the user:**
 - `docs/ARCHITECTURE.md` gives you the mental model.
 - Skip milestone plans unless you want to see how sausage gets made.
 

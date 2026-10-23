@@ -104,7 +104,7 @@ Cross-linked from the specific milestone plan. When starting a milestone, read i
 
 ## Pre-production checklist
 
-These are things that don't matter while Carl runs only on Tyler's laptop but become critical the moment it's shared, deployed, or expected to survive a laptop rebuild.
+These are things that don't matter while Carl runs only on the user's laptop but become critical the moment it's shared, deployed, or expected to survive a laptop rebuild.
 
 ### Version control + collaboration
 
