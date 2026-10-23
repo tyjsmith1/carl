@@ -60,7 +60,7 @@ Save it to your local `~/Downloads/hey_carl.onnx`.
 ## Step 5 — Drop it into the repo
 
 ```bash
-cd /Users/tylersmith/Desktop/dev/assistant
+cd ~/dev/carl
 mkdir -p config/wake_words
 mv ~/Downloads/hey_carl.onnx config/wake_words/hey_carl.onnx
 ```

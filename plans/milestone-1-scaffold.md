@@ -10,7 +10,7 @@ Stand up the whole project structure with every interface, config loader, event 
 
 - Python 3.11+ installed.
 - `uv` or `pip` package manager.
-- Empty repo (`/Users/tylersmith/Desktop/dev/assistant/`).
+- Empty repo (`~/dev/carl/`).
 - Specs read: `config.md`, `event-log.md`, `conversation-state.md`, `memory.md`, `reasoner.md`, `pipeline.md`, `tools.md`.
 
 ## Non-goals
